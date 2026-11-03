@@ -1,0 +1,5 @@
+[env]
+# ts-rs: write generated TypeScript bindings into the frontend, and map i64/u64 to `number`
+# (all our large integers are unix-ms timestamps or token counts well below 2^53).
+TS_RS_EXPORT_DIR = { value = "../src/ipc/bindings", relative = true }
+TS_RS_LARGE_INT = "number"

@@ -1,24 +1,28 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "agents-pulse",
+  "productName": "AgentPulse",
   "version": "0.1.0",
   "identifier": "com.angelo-almonte.agents-pulse",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "agents-pulse",
-        "width": 800,
-        "height": 600
+        "label": "main",
+        "title": "AgentPulse",
+        "width": 1000,
+        "height": 700,
+        "minWidth": 640,
+        "minHeight": 480
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420 ws://localhost:1421"
     }
   },
   "bundle": {

@@ -1,0 +1,22 @@
+[package]
+name = "agentpulse-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+agentpulse-core = { version = "0.1.0", path = "../core" }
+agentpulse-store = { version = "0.1.0", path = "../store" }
+async-trait = "0.1.92"
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["sync", "rt", "time", "macros"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+agentpulse-collectors = { path = "../collectors", features = ["mock"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
