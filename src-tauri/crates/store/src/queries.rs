@@ -151,6 +151,9 @@ fn tokens_metric(
         .evaluate_freshness(now, policy.usage_max_age_ms))
 }
 
+/// Readings of the same snapshot can land a little apart; treat them as one snapshot.
+const SNAPSHOT_SLACK_MS: i64 = 60_000;
+
 fn quotas_for(conn: &Connection, account: i64, now: UnixMs, policy: FreshnessPolicy) -> Result<Vec<QuotaDto>> {
     let mut stmt = conn.prepare_cached(
         "SELECT q.window_kind, q.used_pct, q.resets_at, q.source_kind, q.stability, q.last_observed_at
@@ -181,8 +184,29 @@ fn quotas_for(conn: &Connection, account: i64, now: UnixMs, policy: FreshnessPol
         Some(a) => Some(collector_health(conn, &a.collector_id)?),
         None => None,
     };
+    // A window missing from its limit's latest snapshot is obsolete (e.g. a 30-day window
+    // from a previous plan); don't present it. Limits are the `prefix:` part of the
+    // window kind (none for the main limit).
+    let limit_of = |w: &str| w.rsplit_once(':').map_or("", |(l, _)| l).to_owned();
+    let mut newest_per_limit: HashMap<String, i64> = HashMap::new();
+    for (w, .., last) in &rows {
+        let e = newest_per_limit.entry(limit_of(w)).or_insert(*last);
+        *e = (*e).max(*last);
+    }
     let mut out = Vec::with_capacity(rows.len());
     for (window_kind, pct, resets_at, source, stability, last_observed) in rows {
+        if newest_per_limit.get(&limit_of(&window_kind)).is_some_and(|n| last_observed < n - SNAPSHOT_SLACK_MS) {
+            continue;
+        }
+        // Past its reset time, the last reading says nothing about current usage.
+        if resets_at.is_some_and(|r| r <= now) {
+            out.push(QuotaDto {
+                window_kind,
+                used_pct: Metric::unavailable(Unit::Percent, UnavailableReason::ResetSinceLastReading),
+                resets_at,
+            });
+            continue;
+        }
         let row = AvailabilityRow {
             collector_id: String::new(),
             state: "available".into(),

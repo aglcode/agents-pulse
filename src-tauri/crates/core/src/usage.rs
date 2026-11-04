@@ -2,6 +2,12 @@
 //!
 //! `None` means the provider did not report that field. It is distinct from
 //! `Some(0)` in storage, but counts as 0 when summing.
+//!
+//! Field semantics, the same for every provider (collectors must convert):
+//! * `input`: fresh (uncached) input tokens. Excludes cache reads and writes.
+//! * `cache_read` / `cache_write`: cached input read / written.
+//! * `output`: all output tokens, **including** reasoning.
+//! * `reasoning`: the reasoning portion of `output` (a subset; never add it to `output`).
 
 use serde::{Deserialize, Serialize};
 
