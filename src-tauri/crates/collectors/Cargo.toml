@@ -1,0 +1,20 @@
+[package]
+name = "agentpulse-collectors"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+agentpulse-core = { version = "0.1.0", path = "../core" }
+async-trait = "0.1.92"
+tokio = { version = "1.54.1", features = ["time"] }
+tokio-util = "0.7.20"
+tracing = "0.1.44"
+
+[features]
+default = []
+# Dev-only fake collectors (healthy, panicking, hanging, slow). Never enabled in release builds.
+mock = []
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
