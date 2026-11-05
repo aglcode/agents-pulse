@@ -39,3 +39,7 @@ Private memory is the better measure.
 - **CPU and startup are within target.** Hiding the window cuts idle CPU about 7× (the Rust-side freshness tick and event bridge are muted while hidden).
 - **Memory misses the target.** About 125 MB of the 166 MB is WebView2. Hiding the window doesn't release it. By the architecture's decision rule, WebView destruction on close-to-tray is now justified for re-evaluation (decision pending).
 - **`panic = "unwind"` costs 4.4 MB of binary size,** more than the "small" cost assumed in risk #13. It's what lets a collector panic be isolated instead of aborting the app.
+
+### Decisions (2026-11-04)
+- **Memory above target: deferred to M10.** Re-measure with real collectors running before changing the window lifecycle. If private memory is still over 100 MB, evaluate destroying the WebView on close-to-tray at that point, using this baseline for comparison.
+- **`panic = "unwind"` is kept.** The +4.4 MB binary cost is accepted in exchange for collector crash isolation. A panicking collector is marked failed and retried, rather than aborting the app.

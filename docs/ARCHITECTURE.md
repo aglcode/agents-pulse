@@ -394,3 +394,7 @@ Where the implementation deliberately differs from, or refines, the text above:
 - **Disabling** stops the worker, sets `collector_status.state = 'disabled'`, and flips the collector's `metric_availability` rows to unavailable with reason `collector_disabled`. History is untouched, but old quotas and today's per-model breakdown are no longer presented as current.
 - **Dashboard = one card per AI tool** (`get_dashboard` → `DashboardDto`). Each card has its own Enable/Disable, the bound usage accounts, and today's per-model token breakdown. The header has Enable all / Disable all, covering only tools that have a collector in this build. Tools without a collector show their planned milestone and an inactive button.
 - The M1 `get_overview` / `get_collector_status` commands were replaced by `get_dashboard`, `set_collector_enabled(agent, enabled)` and `set_all_collectors_enabled(enabled)`.
+
+### M1 close-out (2026-11-04)
+- **Release builds suppress WebView2's browser context menu** (Refresh, Save as, Print, Inspect) via `src/app/contextMenu.ts`. It still appears on selected text and in editable fields, so Copy and Paste keep working. Dev builds keep the full menu.
+- **Memory over the 100 MB target is deferred to M10.** Risk #13 is resolved: `panic = "unwind"` is kept at a measured +4.4 MB. See `docs/perf.md`.
