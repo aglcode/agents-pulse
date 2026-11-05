@@ -395,10 +395,6 @@ Where the implementation deliberately differs from, or refines, the text above:
 - **Dashboard = one card per AI tool** (`get_dashboard` → `DashboardDto`). Each card has its own Enable/Disable, the bound usage accounts, and today's per-model token breakdown. The header has Enable all / Disable all, covering only tools that have a collector in this build. Tools without a collector show their planned milestone and an inactive button.
 - The M1 `get_overview` / `get_collector_status` commands were replaced by `get_dashboard`, `set_collector_enabled(agent, enabled)` and `set_all_collectors_enabled(enabled)`.
 
-### M2 decisions and M3, Codex collector (2026-11-04)
-- **Collector order changed** (M2, `docs/providers/README.md`): M3 Codex → M4 Claude Code → M5 Gemini CLI → M6 Antigravity. Integrations that need config changes or live calls are decided at each tool's milestone.
-- **File watching implemented** (§9): a collector's `Trigger::WatchPaths` gets a recursive `notify` watcher with a 2 s debounce, owned by its worker, so disabling the collector stops the watcher. If watching fails, interval polling remains.
-- **Token semantics fixed for all providers** (`core::usage`): `input` is fresh input only, and `reasoning` is a subset of `output`.
-- **New unavailable reason `ResetSinceLastReading`:** a quota window past its `resets_at` is no longer shown with its old percentage. Windows missing from their limit's latest snapshot are hidden (see `docs/providers/codex.md`).
-- **`core::time::parse_rfc3339_ms`:** a small RFC 3339 parser, so collectors don't need a date library.
-- **New dependencies:** `ruzstd` (pure-Rust zstd, no C toolchain), `serde_json/raw_value` (skip content lines without deserializing them), `notify-debouncer-mini` (file watching, as planned).
+### M1 close-out (2026-11-04)
+- **Release builds suppress WebView2's browser context menu** (Refresh, Save as, Print, Inspect) via `src/app/contextMenu.ts`. It still appears on selected text and in editable fields, so Copy and Paste keep working. Dev builds keep the full menu.
+- **Memory over the 100 MB target is deferred to M10.** Risk #13 is resolved: `panic = "unwind"` is kept at a measured +4.4 MB. See `docs/perf.md`.
