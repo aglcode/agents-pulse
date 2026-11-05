@@ -25,6 +25,7 @@ export function reasonText(r: UnavailableReason | null): string {
     case "collector_disabled": return "Collector disabled";
     case "collection_failed": return "Collection failed";
     case "not_yet_collected": return "Not collected yet";
+    case "reset_since_last_reading": return "Window reset since the last reading";
     default: return "Unavailable";
   }
 }

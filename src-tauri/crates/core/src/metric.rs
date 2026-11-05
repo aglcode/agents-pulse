@@ -107,6 +107,9 @@ pub enum UnavailableReason {
     CollectorDisabled,
     CollectionFailed,
     NotYetCollected,
+    /// A quota window's reset time has passed since the last reading, so its
+    /// current value is unknown (and is likely lower than the last reading).
+    ResetSinceLastReading,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]

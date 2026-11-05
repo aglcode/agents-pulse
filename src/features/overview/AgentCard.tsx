@@ -8,7 +8,8 @@ import { reloadDashboard, setError } from "../../store/engineStore";
 
 const num = new Intl.NumberFormat();
 const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-const fmtTokens = (t: TokenTotalsDto) => `${num.format(t.input)} in · ${num.format(t.output)} out`;
+const resetFmt = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const fmtTokens =(t: TokenTotalsDto) => `${num.format(t.input)} in · ${num.format(t.output)} out`;
 const fmtPct = (v: number) => `${v.toFixed(1)}%`;
 
 const PROVIDER: Record<ProviderId, string> = {
@@ -117,8 +118,8 @@ function CardBody({ card }: { card: AgentCardDto }) {
             a.quotas.map((q) => (
               <QuotaRow key={q.window_kind} label={`Quota (${q.window_kind})`}>
                 <MetricValue metric={q.used_pct} format={fmtPct} />
-                {q.resets_at ? (
-                  <span className="ml-2 text-xs text-zinc-500">resets {time.format(new Date(q.resets_at))}</span>
+                {q.resets_at && q.used_pct.value !== null ? (
+                  <span className="ml-2 text-xs text-zinc-500">resets {resetFmt.format(new Date(q.resets_at))}</span>
                 ) : null}
               </QuotaRow>
             ))

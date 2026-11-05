@@ -48,7 +48,7 @@ pub const AGENTS: &[AgentSpec] = &[
         display_name: "Codex",
         default_scope: "openai:chatgpt_codex",
         allowed_scopes: &["openai:chatgpt_codex", "openai:api"],
-        scope_evidence: "unverified: pending M2 (docs/providers/codex.md)",
+        scope_evidence: "verified M2: rollout rate_limits carry ChatGPT plan_type + 5h/7d windows (docs/providers/codex.md)",
     },
     AgentSpec {
         agent: AgentId::Antigravity,

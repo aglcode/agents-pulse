@@ -642,3 +642,51 @@ async fn overview_reports_sources_and_unavailability_truthfully() {
     assert!(matches!(ov.accounts[0].quotas[0].used_pct.freshness(), agentpulse_core::metric::Freshness::Stale { .. }));
     w.shutdown(Duration::from_secs(2)).await.unwrap();
 }
+
+#[tokio::test]
+async fn obsolete_and_reset_quota_windows_are_not_presented_as_current() {
+    let db = TestDb::new();
+    let (w, reader) = db.open();
+    let q = |kind: &str, pct: f64, at: i64, resets: i64| QuotaObservation {
+        window_kind: kind.into(),
+        used_pct: pct,
+        resets_at: Some(resets),
+        observed_at: at,
+        source: SourceKind::Local,
+        stability: Stability::Undocumented,
+    };
+    let avail = AvailabilityUpdate {
+        metric: "quota".into(),
+        availability: Availability::Available { source: SourceKind::Local, stability: Stability::Undocumented },
+    };
+    // An old plan had a 30-day window; the newest snapshot only has 5h + 7d.
+    let mut b = batch("i1", T0);
+    b.quotas = vec![q("30d", 100.0, T0, T0 + 30 * 24 * HOUR_MS)];
+    b.availability = vec![avail.clone()];
+    w.handle().submit(resolved(b, "a")).await.unwrap();
+    let later = T0 + 10 * 24 * HOUR_MS;
+    let mut b = batch("i1", later);
+    b.quotas = vec![
+        q("5h", 97.0, later, later + HOUR_MS),            // resets in 1h
+        q("7d", 23.0, later, later + 5 * 24 * HOUR_MS),   // resets in 5 days
+        q("premium:5h", 5.0, later - HOUR_MS, later + HOUR_MS), // separate limit, own snapshot
+    ];
+    b.availability = vec![avail];
+    w.handle().submit(resolved(b, "a")).await.unwrap();
+
+    let overview = |now: i64| reader.with_conn_blocking(move |c| crate::overview(c, now, 0, FreshnessPolicy::default())).unwrap();
+
+    let ov = overview(later + 60_000);
+    let kinds: Vec<_> = ov.accounts[0].quotas.iter().map(|q| q.window_kind.as_str()).collect();
+    assert_eq!(kinds, vec!["5h", "7d", "premium:5h"], "obsolete 30d window hidden; other limits kept");
+    assert_eq!(ov.accounts[0].quotas[0].used_pct.value(), Some(&97.0));
+
+    // Two hours later the 5h window has reset: its old 97% must not be shown.
+    let ov = overview(later + 2 * HOUR_MS);
+    let five_h = ov.accounts[0].quotas.iter().find(|q| q.window_kind == "5h").unwrap();
+    assert!(five_h.used_pct.value().is_none());
+    assert_eq!(five_h.used_pct.unavailable_reason(), Some(&UnavailableReason::ResetSinceLastReading));
+    let seven_d = ov.accounts[0].quotas.iter().find(|q| q.window_kind == "7d").unwrap();
+    assert_eq!(seven_d.used_pct.value(), Some(&23.0), "not yet reset: last reading shown (stale-labelled)");
+    w.shutdown(Duration::from_secs(2)).await.unwrap();
+}

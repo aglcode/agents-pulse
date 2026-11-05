@@ -6,7 +6,10 @@ edition = "2024"
 [dependencies]
 agentpulse-core = { version = "0.1.0", path = "../core" }
 async-trait = "0.1.92"
-tokio = { version = "1.54.1", features = ["time"] }
+ruzstd = "0.9.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["raw_value"] }
+tokio = { version = "1.54.1", features = ["rt", "time"] }
 tokio-util = "0.7.20"
 tracing = "0.1.44"
 
@@ -14,7 +17,12 @@ tracing = "0.1.44"
 default = []
 # Dev-only fake collectors (healthy, panicking, hanging, slow). Never enabled in release builds.
 mock = []
+# Fixture builders for other crates' tests (e.g. engine end-to-end privacy tests).
+testkit = []
 
 [lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }

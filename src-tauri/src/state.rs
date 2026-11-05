@@ -1,10 +1,12 @@
 //! App state: logging, database, engine, event bridge.
 
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 #[cfg(debug_assertions)]
 use std::time::Duration;
 
+use agentpulse_collectors::codex::CodexCollector;
 use agentpulse_core::collector::Collector;
 use agentpulse_engine::{Engine, EngineConfig};
 use tauri::{App, Manager};
@@ -26,13 +28,14 @@ pub fn init(app: &mut App) -> anyhow::Result<()> {
     let (writer, reader) = agentpulse_store::open(&db_path)?;
     tracing::info!(schema = agentpulse_store::SCHEMA_VERSION, "database ready");
 
-    let config = EngineConfig { home_dir: app.path().home_dir().ok(), ..EngineConfig::default() };
+    let home = app.path().home_dir().ok();
+    let config = EngineConfig { home_dir: home.clone(), ..EngineConfig::default() };
     // Reuse Tauri's Tokio runtime; the engine never creates its own.
     let rt = tauri::async_runtime::handle().inner().clone();
     // Opt-in: only collectors the user enabled earlier start now.
     let enabled = Engine::enabled_from_settings(&reader);
     tracing::info!(enabled = enabled.len(), "collectors enabled from settings");
-    let engine = Arc::new(Engine::start(&rt, collectors(), &enabled, writer, reader, config));
+    let engine = Arc::new(Engine::start(&rt, collectors(home.as_deref()), &enabled, writer, reader, config));
 
     crate::events::spawn_bridge(app.handle().clone(), engine.clone());
 
@@ -45,18 +48,22 @@ pub fn init(app: &mut App) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Real provider collectors are added from M3. Debug builds run a synthetic
-/// collector so the pipeline can be exercised end to end; release builds never do.
-fn collectors() -> Vec<Arc<dyn Collector>> {
+/// Every registered collector. Registration doesn't start anything: collectors are
+/// opt-in and only run once the user enables them. Debug builds also get a synthetic
+/// collector to exercise the pipeline; release builds never do.
+fn collectors(user_home: Option<&Path>) -> Vec<Arc<dyn Collector>> {
+    let mut list: Vec<Arc<dyn Collector>> = Vec::new();
+    if let Some(home) = user_home {
+        list.push(Arc::new(CodexCollector::new(CodexCollector::default_home(home))));
+    } else {
+        tracing::warn!("home directory unknown; local collectors unavailable");
+    }
     #[cfg(debug_assertions)]
     {
         use agentpulse_collectors::mock::{MockBehavior, MockCollector};
-        vec![Arc::new(MockCollector::new("mock-healthy", MockBehavior::Healthy, Duration::from_secs(15)))]
+        list.push(Arc::new(MockCollector::new("mock-healthy", MockBehavior::Healthy, Duration::from_secs(15))));
     }
-    #[cfg(not(debug_assertions))]
-    {
-        Vec::new()
-    }
+    list
 }
 
 fn init_logging(app: &App) -> anyhow::Result<WorkerGuard> {

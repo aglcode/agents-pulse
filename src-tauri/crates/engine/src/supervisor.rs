@@ -37,6 +37,9 @@ use crate::resolver::resolve;
 /// `app_settings` key holding the JSON array of enabled collector ids.
 pub const ENABLED_SETTING: &str = "collectors.enabled";
 
+/// File events within this window collapse into one collector run.
+const WATCH_DEBOUNCE: Duration = Duration::from_secs(2);
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Delay between collector start-ups at launch (index × stagger), so startup isn't a burst.
@@ -380,6 +383,10 @@ impl Worker {
             })
             .unwrap_or(Duration::from_secs(300));
 
+        // Event-driven collection: file changes wake the worker (debounced). The watcher
+        // lives exactly as long as this worker, so disabling the collector stops it.
+        let _watcher = self.watch(&id);
+
         tokio::select! {
             _ = self.cancel.cancelled() => return,
             _ = tokio::time::sleep(self.stagger) => {}
@@ -503,6 +510,50 @@ impl Worker {
             }
         }
         RunOutcome::Succeeded
+    }
+
+    /// Start a debounced recursive watcher on the collector's `WatchPaths`, if any.
+    /// Failures are logged and fall back to interval polling.
+    fn watch(&self, id: &str) -> Option<notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>> {
+        use notify_debouncer_mini::notify::RecursiveMode;
+        let paths: Vec<PathBuf> = self
+            .collector
+            .triggers()
+            .into_iter()
+            .filter_map(|t| match t {
+                Trigger::WatchPaths(p) => Some(p),
+                _ => None,
+            })
+            .flatten()
+            .filter(|p| p.is_dir())
+            .collect();
+        if paths.is_empty() {
+            return None;
+        }
+        let notify = self.notify.clone();
+        let mut debouncer = match notify_debouncer_mini::new_debouncer(
+            WATCH_DEBOUNCE,
+            move |res: notify_debouncer_mini::DebounceEventResult| {
+                if res.is_ok() {
+                    notify.notify_one();
+                }
+            },
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(collector = %id, error = %e, "file watcher unavailable; using interval polling");
+                return None;
+            }
+        };
+        let mut watched = 0;
+        for p in &paths {
+            match debouncer.watcher().watch(p, RecursiveMode::Recursive) {
+                Ok(()) => watched += 1,
+                Err(e) => tracing::warn!(collector = %id, error = %e, "could not watch a collector path"),
+            }
+        }
+        tracing::debug!(collector = %id, watched, "file watcher started");
+        (watched > 0).then_some(debouncer)
     }
 
     fn register_abort(&self, handle: AbortHandle) {
