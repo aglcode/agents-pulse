@@ -134,7 +134,7 @@ async fn two_folders_two_accounts_no_content_in_db_or_logs_and_folder_changes_ap
     let personal = home.join(".claude-personal");
     std::fs::create_dir_all(&work).unwrap();
     std::fs::create_dir_all(&personal).unwrap();
-    std::fs::write(home.join(".claude.json"), settings_json("uuid-WORK-1", "me@work.example", "org-w", "claude_team", SENTINEL)).unwrap();
+    std::fs::write(home.join(".claude.json"), settings_json("uuid-WORK-1", "me@work.example", "org-w", "claude_max", SENTINEL)).unwrap();
     std::fs::write(personal.join(".claude.json"), settings_json("uuid-HOME-2", "me@home.example", "org-h", "claude_pro", SENTINEL)).unwrap();
 
     let mut w = LogBuilder::new();
@@ -162,10 +162,10 @@ async fn two_folders_two_accounts_no_content_in_db_or_logs_and_folder_changes_ap
     assert_eq!(count(&reader, "SELECT COUNT(DISTINCT usage_account_id) FROM usage_records"), 2, "usage never shared");
     let mut labels = strings(&reader, "SELECT display_label FROM usage_accounts ORDER BY display_label");
     labels.sort();
-    assert_eq!(labels, vec!["Claude Code · me@home.example (Pro)", "Claude Code · me@work.example (Team)"]);
+    assert_eq!(labels, vec!["Claude Code · me@home.example (Pro)", "Claude Code · me@work.example (Max)"]);
     let reasons = strings(&reader, "SELECT reason FROM metric_availability WHERE metric = 'quota'");
     assert_eq!(reasons.len(), 2);
-    assert!(reasons.iter().all(|r| r.contains("requires_tool_settings_change")));
+    assert!(reasons.iter().all(|r| r.contains("requires_tool_settings_change")), "{reasons:?}");
     assert_eq!(count(&reader, "SELECT COUNT(*) FROM context_segments"), 2);
 
     // File watcher: a new message in the work log triggers a run.

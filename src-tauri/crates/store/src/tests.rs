@@ -690,3 +690,86 @@ async fn obsolete_and_reset_quota_windows_are_not_presented_as_current() {
     assert_eq!(seven_d.used_pct.value(), Some(&23.0), "not yet reset: last reading shown (stale-labelled)");
     w.shutdown(Duration::from_secs(2)).await.unwrap();
 }
+
+#[tokio::test]
+async fn forgetting_an_install_deletes_only_accounts_bound_solely_to_it() {
+    let db = TestDb::new();
+    let (w, reader) = db.open();
+    let full = |install: &str, key: &str| {
+        let mut b = batch(install, T0);
+        b.sessions = vec![SessionObservation {
+            session_key: format!("sess-{key}"),
+            model: None,
+            started_at: T0,
+            last_activity_at: T0,
+            ended_at: None,
+            status: SessionStatus::Idle,
+        }];
+        b.usage = vec![UsageEvent { session_key: Some(format!("sess-{key}")), ..usage(key, 1, T0, None, tokens(Some(5), Some(1), None, None)) }];
+        b.quotas = vec![quota(10.0, T0, None)];
+        b.contexts = vec![ContextObservation {
+            session_key: format!("sess-{key}"),
+            used_tokens: 1,
+            total_tokens: Some(10),
+            total_source: SourceKind::Estimated,
+            observed_at: T0,
+            source: SourceKind::Local,
+            stability: Stability::Undocumented,
+        }];
+        b.availability = vec![AvailabilityUpdate {
+            metric: "tokens".into(),
+            availability: Availability::Available { source: SourceKind::Local, stability: Stability::Undocumented },
+        }];
+        b.cursors = vec![CursorUpdate { source_key: format!("cur-{key}"), state: CursorState::default() }];
+        b
+    };
+    // "team" is bound only to install i1; "pro" only to i2; "shared" to both.
+    let team = w.handle().submit(resolved(full("i1", "team"), "acct-team")).await.unwrap().usage_account_id;
+    let pro = w.handle().submit(resolved(full("i2", "pro"), "acct-pro")).await.unwrap().usage_account_id;
+    let mut s1 = batch("i3", T0);
+    s1.usage = vec![usage("shared-1", 1, T0, None, tokens(Some(1), None, None, None))];
+    let shared = w.handle().submit(resolved(s1, "acct-shared")).await.unwrap().usage_account_id;
+    let mut s2 = batch("i4", T0 + 1);
+    s2.usage = vec![usage("shared-2", 1, T0 + 1, None, tokens(Some(1), None, None, None))];
+    w.handle().submit(resolved(s2, "acct-shared")).await.unwrap();
+
+    let r = w
+        .handle()
+        .admin(AdminOp::ForgetInstall {
+            agent_id: "mock".into(),
+            install_key: "i1".into(),
+            collector_id: "test".into(),
+            cursor_keys: vec!["cur-team".into()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(r, AdminResult::InstallForgotten { accounts_deleted: 1, accounts_kept: 0 });
+    let gone = |table: &str, col: &str, id: i64| count(&reader, &format!("SELECT COUNT(*) FROM {table} WHERE {col} = {id}"));
+    for (table, col) in [
+        ("usage_accounts", "id"),
+        ("usage_records", "usage_account_id"),
+        ("usage_hourly", "usage_account_id"),
+        ("sessions", "usage_account_id"),
+        ("quota_segments", "usage_account_id"),
+        ("metric_availability", "usage_account_id"),
+        ("agent_bindings", "usage_account_id"),
+    ] {
+        assert_eq!(gone(table, col, team), 0, "{table} still has the removed account");
+        assert!(gone(table, col, pro) > 0, "{table} lost the other account's data");
+    }
+    assert_eq!(count(&reader, "SELECT COUNT(*) FROM context_segments"), 1, "only the kept account's context remains");
+    assert_eq!(count(&reader, "SELECT COUNT(*) FROM collector_cursors WHERE source_key = 'cur-team'"), 0);
+    assert_eq!(count(&reader, "SELECT COUNT(*) FROM collector_cursors WHERE source_key = 'cur-pro'"), 1);
+
+    // An account also bound to another install is kept; only this install's binding goes.
+    let r = w
+        .handle()
+        .admin(AdminOp::ForgetInstall { agent_id: "mock".into(), install_key: "i3".into(), collector_id: "test".into(), cursor_keys: vec![] })
+        .await
+        .unwrap();
+    assert_eq!(r, AdminResult::InstallForgotten { accounts_deleted: 0, accounts_kept: 1 });
+    assert_eq!(gone("usage_records", "usage_account_id", shared), 2, "shared history kept");
+    assert_eq!(count(&reader, "SELECT COUNT(*) FROM agent_bindings WHERE install_key = 'i3'"), 0);
+    assert_rollups_match_rebuild(&w, &reader).await;
+    w.shutdown(Duration::from_secs(2)).await.unwrap();
+}

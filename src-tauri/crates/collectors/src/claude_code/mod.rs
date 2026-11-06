@@ -3,6 +3,10 @@
 //! reconfigures Claude Code. Sources and field mapping are in
 //! `docs/providers/claude_code.md`.
 //!
+//! Quota (M4b) comes from AgentPulse's status line tap, which the user turns on per
+//! folder ([`settings_edit`], the only code that writes to a Claude Code folder).
+//! The collector itself only reads the tap's snapshots from AgentPulse's own folder.
+//!
 //! One Claude Code *config folder* is one installation: the default `~/.claude`,
 //! the folder named by `CLAUDE_CONFIG_DIR` (if AgentPulse can see it), and any
 //! folder the user adds. Each folder gets its own batch, identity and account, so
@@ -13,10 +17,14 @@
 mod files;
 mod identity;
 mod parse;
+pub mod settings_edit;
+pub mod tap;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tap_tests;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,7 +33,7 @@ use std::time::{Duration, SystemTime};
 
 use agentpulse_core::batch::{
     Availability, AvailabilityUpdate, ContextObservation, CursorState, CursorUpdate, NormalizedBatch,
-    SessionObservation, SessionStatus, UsageEvent,
+    QuotaObservation, SessionObservation, SessionStatus, UsageEvent,
 };
 use agentpulse_core::collector::{Capabilities, Collector, CollectorError, Ctx, Detection, InstallDetection, Trigger};
 use agentpulse_core::hash::stable_hash;
@@ -68,6 +76,11 @@ impl ConfigFolder {
         files::has_logs_folder(&self.path)
     }
 
+    /// Hashed folder identity: the install key, and the tap's snapshot name.
+    pub fn key(&self) -> String {
+        self.install_key()
+    }
+
     fn install_key(&self) -> String {
         stable_hash(&["claude-config-dir", &normalize(&self.path)])
     }
@@ -81,15 +94,40 @@ pub struct ClaudeCodeCollector {
     env_dir: Option<PathBuf>,
     folders: RwLock<Vec<ConfigFolder>>,
     signins: Mutex<SigninCache>,
+    /// AgentPulse's own folder for tap snapshots (`None`: quota tap unavailable).
+    tap_dir: Option<PathBuf>,
+    /// Newest tap snapshot already emitted, per folder key.
+    tap_seen: Mutex<HashMap<String, UnixMs>>,
 }
 
 impl ClaudeCodeCollector {
     /// `env_dir` is `CLAUDE_CONFIG_DIR` (see [`ClaudeCodeCollector::env_config_dir`]);
     /// `added` are folders the user added in AgentPulse.
     pub fn new(user_home: PathBuf, env_dir: Option<PathBuf>, added: Vec<PathBuf>) -> Self {
-        let c = Self { user_home, env_dir, folders: RwLock::new(Vec::new()), signins: Mutex::new(HashMap::new()) };
+        let c = Self {
+            user_home,
+            env_dir,
+            folders: RwLock::new(Vec::new()),
+            signins: Mutex::new(HashMap::new()),
+            tap_dir: None,
+            tap_seen: Mutex::new(HashMap::new()),
+        };
         c.set_added_folders(added);
         c
+    }
+
+    /// Read quota tap snapshots from `dir` (see [`tap::tap_dir`]).
+    pub fn with_tap_dir(mut self, dir: PathBuf) -> Self {
+        self.tap_dir = Some(dir);
+        self
+    }
+
+    pub fn tap_dir(&self) -> Option<&Path> {
+        self.tap_dir.as_deref()
+    }
+
+    pub fn user_home(&self) -> &Path {
+        &self.user_home
     }
 
     /// `CLAUDE_CONFIG_DIR` from AgentPulse's own environment. Often unset even when
@@ -129,8 +167,8 @@ impl ClaudeCodeCollector {
     }
 
     /// Folders in the user's home that look like extra Claude Code config folders
-    /// (`.claude-*` with a `projects` log folder) and aren't collected yet.
-    /// Offered to the user; never added automatically.
+    /// (`.claude-*` with a `projects` log folder), aren't collected yet, and are
+    /// signed in to a supported plan. Offered to the user; never added automatically.
     pub fn suggestions(&self) -> Vec<PathBuf> {
         let Ok(entries) = std::fs::read_dir(&self.user_home) else { return Vec::new() };
         let mut out: Vec<PathBuf> = entries
@@ -139,6 +177,7 @@ impl ClaudeCodeCollector {
             .filter(|e| e.file_name().to_string_lossy().starts_with(".claude"))
             .map(|e| e.path())
             .filter(|p| files::has_logs_folder(p) && !self.is_collected(p))
+            .filter(|p| self.plan_supported(&ConfigFolder { path: p.clone(), origin: FolderOrigin::Added }))
             .collect();
         out.sort();
         out
@@ -161,8 +200,25 @@ impl ClaudeCodeCollector {
         signin
     }
 
+    /// Whether `folder` is signed in to a supported plan (Pro, Max, Ultra). Other
+    /// folders (Team, Enterprise, API key, signed out) are listed but never read.
+    pub fn plan_supported(&self, folder: &ConfigFolder) -> bool {
+        self.signin(folder).plan_supported()
+    }
+
+    /// Plan label for a folder, e.g. `"Team"`, for explaining why it's skipped.
+    pub fn plan_label(&self, folder: &ConfigFolder) -> Option<String> {
+        identity::plan_name(self.signin(folder).org_type.as_deref())
+    }
+
+    /// Cursor keys of every log in `folder`, for removing it from AgentPulse.
+    pub fn cursor_keys(&self, folder: &ConfigFolder) -> Vec<String> {
+        files::list(&folder.path, &folder.key()).map(|v| v.into_iter().map(|f| f.source_key).collect()).unwrap_or_default()
+    }
+
+    /// Folders that are read: they have logs and a supported plan.
     fn active_folders(&self) -> Vec<ConfigFolder> {
-        self.folders().into_iter().filter(ConfigFolder::has_logs).collect()
+        self.folders().into_iter().filter(|f| f.has_logs() && self.plan_supported(f)).collect()
     }
 }
 
@@ -178,13 +234,15 @@ impl Collector for ClaudeCodeCollector {
 
     fn capabilities(&self) -> Capabilities {
         let local = Some((SOURCE, STABILITY));
-        // Quota exists only through a status line command, which would mean editing
-        // Claude Code's settings: not offered (read-only).
-        Capabilities { metrics: vec![("tokens", local), ("context", local), ("quota", None)] }
+        // Quota only through the status line tap, once the user turns it on.
+        let tap = self.tap_dir.as_ref().map(|_| (SOURCE, Stability::Documented));
+        Capabilities { metrics: vec![("tokens", local), ("context", local), ("quota", tap)] }
     }
 
     fn triggers(&self) -> Vec<Trigger> {
-        let dirs = self.folders().iter().map(|f| files::projects_dir(&f.path)).collect();
+        // Only folders that are read; a plan change is picked up by the 5-minute poll.
+        let mut dirs: Vec<PathBuf> = self.active_folders().iter().map(|f| files::projects_dir(&f.path)).collect();
+        dirs.extend(self.tap_dir.clone());
         vec![Trigger::WatchPaths(dirs), Trigger::Interval(INTERVAL), Trigger::Manual]
     }
 
@@ -234,14 +292,81 @@ impl Collector for ClaudeCodeCollector {
                 usage = scan.usage.len(),
                 "claude code scan done"
             );
-            batches.push(build_batch(install_key, signin, scan));
+            let tap = self.tap_reading(&folder);
+            batches.push(build_batch(install_key, signin, scan, tap));
         }
         Ok(batches)
     }
 }
 
-fn build_batch(install_key: String, signin: Signin, scan: FolderScan) -> NormalizedBatch {
+/// The quota tap's state for one folder in this run.
+struct TapReading {
+    /// AgentPulse's tap is this folder's status line.
+    on: bool,
+    /// The latest snapshot, if any.
+    latest: Option<tap::Snapshot>,
+    /// Whether `latest` is newer than anything emitted before.
+    is_new: bool,
+}
+
+impl ClaudeCodeCollector {
+    /// Read-only: is the tap on for `folder`, and is there a new snapshot?
+    fn tap_reading(&self, folder: &ConfigFolder) -> TapReading {
+        let on = settings_edit::tap_state(&folder.path) == settings_edit::TapState::On;
+        let key = folder.key();
+        let latest = match (&self.tap_dir, on) {
+            (Some(dir), true) => tap::read_snapshot(dir, &key),
+            _ => None,
+        };
+        let mut is_new = false;
+        if let (Some(s), Ok(mut seen)) = (&latest, self.tap_seen.lock())
+            && seen.get(&key).is_none_or(|t| s.observed_at > *t)
+        {
+            seen.insert(key, s.observed_at);
+            is_new = true;
+        }
+        TapReading { on, latest, is_new }
+    }
+}
+
+fn build_batch(install_key: String, signin: Signin, mut scan: FolderScan, tap: TapReading) -> NormalizedBatch {
     let available = Availability::Available { source: SOURCE, stability: STABILITY };
+    let documented = Availability::Available { source: SOURCE, stability: Stability::Documented };
+    let mut quotas = Vec::new();
+    let quota_availability = match &tap.latest {
+        _ if !tap.on => Availability::Unavailable(UnavailableReason::RequiresToolSettingsChange),
+        Some(s) if s.five_hour.is_some() || s.seven_day.is_some() => documented,
+        // On, but Claude Code hasn't reported rate limits yet (they arrive after a
+        // session's first reply).
+        _ => Availability::Unavailable(UnavailableReason::NotYetCollected),
+    };
+    if let (Some(s), true) = (&tap.latest, tap.is_new) {
+        for (kind, w) in [("5h", s.five_hour), ("7d", s.seven_day)] {
+            if let Some(w) = w {
+                quotas.push(QuotaObservation {
+                    window_kind: kind.into(),
+                    used_pct: w.used_pct,
+                    resets_at: w.resets_at,
+                    observed_at: s.observed_at,
+                    source: SOURCE,
+                    stability: Stability::Documented,
+                });
+            }
+        }
+        if let (Some(session), Some(c)) = (&s.session_key, s.context) {
+            // The tap knows the real window size; drop this session's estimate from the logs.
+            scan.contexts.retain(|x| &x.session_key != session);
+            scan.contexts.push(ContextObservation {
+                session_key: session.clone(),
+                used_tokens: c.used_tokens,
+                total_tokens: Some(c.window_tokens),
+                total_source: SOURCE,
+                observed_at: s.observed_at,
+                source: SOURCE,
+                stability: Stability::Documented,
+            });
+        }
+    }
     NormalizedBatch {
         collector_id: CollectorId::new(COLLECTOR_ID),
         agent: AgentId::ClaudeCode,
@@ -252,15 +377,12 @@ fn build_batch(install_key: String, signin: Signin, scan: FolderScan) -> Normali
         collected_at: now_ms(),
         sessions: scan.sessions,
         usage: scan.usage,
-        quotas: Vec::new(),
+        quotas,
         contexts: scan.contexts,
         availability: vec![
             AvailabilityUpdate { metric: "tokens".into(), availability: available.clone() },
             AvailabilityUpdate { metric: "context".into(), availability: available },
-            AvailabilityUpdate {
-                metric: "quota".into(),
-                availability: Availability::Unavailable(UnavailableReason::RequiresToolSettingsChange),
-            },
+            AvailabilityUpdate { metric: "quota".into(), availability: quota_availability },
         ],
         cursors: scan.cursors,
     }

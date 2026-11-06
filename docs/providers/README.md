@@ -38,7 +38,7 @@ The integrations in "Decisions needed" item 2 are deferred to each tool's own mi
 
 ## Read-only rule (decided 2026-11-06)
 **AgentPulse only reads AI tools' folders; it never writes to, reconfigures or runs them in a way that changes their files.** This settles two of the decisions below:
-- **2(b) Claude status line tap: rejected.** Claude Code quota stays Unavailable (`requires_tool_settings_change`).
+- **2(b) Claude status line tap: approved later the same day as an opt-in button (M4b).** It's the one exception to the rule: a per-folder **Enable quota** button adds a single `statusLine` block to that folder's `settings.json`, only after the user sees and confirms the exact lines. **Disable quota** removes exactly those lines. Until it's enabled, quota stays Unavailable (`requires_tool_settings_change`).
 - **2(c) Gemini telemetry edit: rejected.** M5 can use telemetry only if the user has already turned it on.
 
 It also changed Claude Code identity: `claude auth status` writes to the config folder when it runs, so M4 reads `.claude.json` instead (`claude_code.md`).

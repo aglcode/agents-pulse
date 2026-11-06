@@ -2,6 +2,8 @@
 //!
 //! None of these rewrite usage records, sessions, segments or rollups keyed by
 //! `usage_account_id`, so historical attribution is preserved (architecture §5.4).
+//! The one exception is [`AdminOp::ForgetInstall`], which deletes, and runs only
+//! when the user explicitly removes an installation from AgentPulse.
 
 use agentpulse_core::time::{now_ms, HOUR_MS};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -22,6 +24,11 @@ pub enum AdminOp {
     /// The user disabled this collector. Its metrics become unavailable with reason
     /// `collector_disabled` (current state only; history is untouched).
     MarkCollectorDisabled { collector_id: String },
+    /// The user removed an installation from AgentPulse: delete every usage account
+    /// bound **only** to it, with all their history, plus the given read cursors.
+    /// Accounts also bound to another installation are kept (usage can't be split
+    /// by installation); only this installation's bindings are removed from them.
+    ForgetInstall { agent_id: String, install_key: String, collector_id: String, cursor_keys: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +39,7 @@ pub enum AdminResult {
     RollupsRebuilt { rows: i64 },
     SettingSaved,
     CollectorMarkedDisabled,
+    InstallForgotten { accounts_deleted: usize, accounts_kept: usize },
 }
 
 pub(crate) fn apply_admin(conn: &mut Connection, op: AdminOp) -> Result<AdminResult> {
@@ -145,10 +153,60 @@ pub(crate) fn apply_admin(conn: &mut Connection, op: AdminOp) -> Result<AdminRes
             )?;
             AdminResult::CollectorMarkedDisabled
         }
+        AdminOp::ForgetInstall { agent_id, install_key, collector_id, cursor_keys } => {
+            let accounts: Vec<i64> = tx
+                .prepare("SELECT DISTINCT usage_account_id FROM agent_bindings WHERE agent_id = ?1 AND install_key = ?2")?
+                .query_map(params![agent_id, install_key], |r| r.get(0))?
+                .collect::<std::result::Result<_, _>>()?;
+            let (mut deleted, mut kept) = (0, 0);
+            for id in accounts {
+                let other_installs: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM agent_bindings WHERE usage_account_id = ?1
+                     AND NOT (agent_id = ?2 AND install_key = ?3)",
+                    params![id, agent_id, install_key],
+                    |r| r.get(0),
+                )?;
+                if other_installs > 0 {
+                    kept += 1;
+                    continue;
+                }
+                for sql in FORGET_ACCOUNT_SQL {
+                    tx.execute(sql, [id])?;
+                }
+                deleted += 1;
+            }
+            tx.execute(
+                "DELETE FROM agent_bindings WHERE agent_id = ?1 AND install_key = ?2",
+                params![agent_id, install_key],
+            )?;
+            // Identities no account refers to any more (labels are personal data).
+            tx.execute("DELETE FROM identities WHERE id NOT IN (SELECT identity_id FROM usage_accounts WHERE identity_id IS NOT NULL)", [])?;
+            for key in &cursor_keys {
+                tx.execute(
+                    "DELETE FROM collector_cursors WHERE collector_id = ?1 AND source_key = ?2",
+                    params![collector_id, key],
+                )?;
+            }
+            AdminResult::InstallForgotten { accounts_deleted: deleted, accounts_kept: kept }
+        }
     };
     tx.commit()?;
     Ok(result)
 }
+
+/// Everything that belongs to one usage account, children first (`?1` = account id).
+const FORGET_ACCOUNT_SQL: &[&str] = &[
+    "DELETE FROM context_segments WHERE session_id IN (SELECT id FROM sessions WHERE usage_account_id = ?1)",
+    "DELETE FROM usage_records WHERE usage_account_id = ?1",
+    "DELETE FROM sessions WHERE usage_account_id = ?1",
+    "DELETE FROM usage_hourly WHERE usage_account_id = ?1",
+    "DELETE FROM quota_segments WHERE usage_account_id = ?1",
+    "DELETE FROM metric_availability WHERE usage_account_id = ?1",
+    "DELETE FROM notifications WHERE usage_account_id = ?1",
+    "DELETE FROM link_memberships WHERE usage_account_id = ?1",
+    "DELETE FROM agent_bindings WHERE usage_account_id = ?1",
+    "DELETE FROM usage_accounts WHERE id = ?1",
+];
 
 /// Full recompute of hourly rollups from raw records (timestamps are positive, so
 /// `occurred_at - occurred_at % HOUR` equals the floor used incrementally).

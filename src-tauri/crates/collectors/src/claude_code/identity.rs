@@ -45,6 +45,17 @@ struct OAuthAccount {
 pub(crate) struct Signin {
     pub identity: IdentityEvidence,
     pub scope: &'static str,
+    /// `oauthAccount.organizationType`, e.g. `claude_pro`, `claude_team`.
+    pub org_type: Option<String>,
+}
+
+impl Signin {
+    /// Whether AgentPulse supports this plan: individual claude.ai Pro, Max and Ultra
+    /// (decided 2026-11-06). These are also the plans Claude Code's status line docs
+    /// say report quota. Team, Enterprise and API-key folders are not read at all.
+    pub fn plan_supported(&self) -> bool {
+        matches!(self.org_type.as_deref(), Some("claude_pro" | "claude_max" | "claude_ultra"))
+    }
 }
 
 /// Where Claude Code keeps the settings file for a config folder: `~/.claude.json`
@@ -81,6 +92,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Option<Signin> {
     let file: SettingsFile = serde_json::from_slice(bytes).ok()?;
     let acct = file.oauth_account?;
     let uuid = acct.account_uuid?;
+    let org_type = acct.organization_type.clone();
     let label = match (acct.email.as_deref(), plan_name(acct.organization_type.as_deref())) {
         (Some(e), Some(p)) => Some(format!("{e} ({p})")),
         (Some(e), None) => Some(e.to_owned()),
@@ -97,6 +109,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Option<Signin> {
         },
         // A claude.ai login: Claude Code draws on the Pro/Max/Team plan (claude_code.md).
         scope: SUBSCRIPTION_SCOPE,
+        org_type,
     })
 }
 
@@ -106,11 +119,12 @@ pub(crate) fn signed_out() -> Signin {
     Signin {
         identity: IdentityEvidence::auth_mode_only("API key or signed out", ".claude.json has no oauthAccount"),
         scope: API_SCOPE,
+        org_type: None,
     }
 }
 
 /// `claude_pro` → `Pro`, `claude_max` → `Max`, `claude_team` → `Team`.
-fn plan_name(org_type: Option<&str>) -> Option<String> {
+pub(crate) fn plan_name(org_type: Option<&str>) -> Option<String> {
     let t = org_type?.strip_prefix("claude_")?;
     if t.is_empty() {
         return None;

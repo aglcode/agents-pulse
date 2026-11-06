@@ -33,6 +33,8 @@ impl Home {
         ));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(p.join(".claude/projects")).unwrap();
+        // A supported (Pro) login by default; tests override it to check other plans.
+        std::fs::write(p.join(".claude.json"), settings_json("uuid-default", "me@default.example", "org-1", "claude_pro", SENTINEL)).unwrap();
         Self(p)
     }
     fn default_dir(&self) -> PathBuf {
@@ -148,6 +150,7 @@ async fn context_used_is_input_plus_cache_and_the_total_is_labelled_estimated() 
 #[tokio::test]
 async fn quota_is_unavailable_because_it_needs_a_settings_change() {
     let home = Home::new();
+    home.default_settings("uuid-pro", "me@home.example", "claude_pro");
     let mut log = LogBuilder::new();
     log.assistant("s", "m", "claude-opus-4-5", T, tokens(1, 1, 0, 0));
     write_session(&home.default_dir(), "p", "s", &log);
@@ -161,7 +164,7 @@ async fn quota_is_unavailable_because_it_needs_a_settings_change() {
 #[tokio::test]
 async fn identity_comes_from_the_settings_file_with_org_and_plan() {
     let home = Home::new();
-    home.default_settings("uuid-work-1", "me@work.example", "claude_team");
+    home.default_settings("uuid-work-1", "me@work.example", "claude_max");
     let mut log = LogBuilder::new();
     log.assistant("s", "m", "claude-opus-4-5", T, tokens(1, 1, 0, 0));
     write_session(&home.default_dir(), "p", "s", &log);
@@ -172,14 +175,14 @@ async fn identity_comes_from_the_settings_file_with_org_and_plan() {
     assert_eq!(b.entitlement_scope, "anthropic:claude_subscription");
     assert_eq!(b.identity.kind, IdentityKind::VerifiedId);
     assert_eq!(b.identity.org.as_deref(), Some("org-1"));
-    assert_eq!(b.identity.display_label.as_deref(), Some("me@work.example (Team)"));
+    assert_eq!(b.identity.display_label.as_deref(), Some("me@work.example (Max)"));
     assert!(!format!("{:?}", b.identity).contains("uuid-work-1"), "account id is a secret");
 }
 
 #[tokio::test]
 async fn two_folders_signed_in_to_different_accounts_give_two_separate_batches() {
     let home = Home::new();
-    home.default_settings("uuid-work", "me@work.example", "claude_team");
+    home.default_settings("uuid-work", "me@work.example", "claude_max");
     let personal = home.folder(".claude-personal");
     std::fs::write(
         personal.join(".claude.json"),
@@ -200,7 +203,7 @@ async fn two_folders_signed_in_to_different_accounts_give_two_separate_batches()
     assert_eq!(batches.len(), 2);
     let (w, h) = (&batches[0], &batches[1]);
     assert_ne!(w.install_key, h.install_key);
-    assert_eq!(w.identity.display_label.as_deref(), Some("me@work.example (Team)"));
+    assert_eq!(w.identity.display_label.as_deref(), Some("me@work.example (Max)"));
     assert_eq!(h.identity.display_label.as_deref(), Some("me@home.example (Pro)"));
     assert_eq!(w.usage.iter().map(|u| u.dedup_key.as_str()).collect::<Vec<_>>(), vec!["claude:msg_work"]);
     assert_eq!(h.usage.iter().map(|u| u.dedup_key.as_str()).collect::<Vec<_>>(), vec!["claude:msg_home"]);
@@ -209,15 +212,45 @@ async fn two_folders_signed_in_to_different_accounts_give_two_separate_batches()
 }
 
 #[tokio::test]
-async fn no_claude_ai_login_means_api_scope_and_install_scoped() {
+async fn folders_without_a_pro_max_or_ultra_login_are_never_read() {
+    for settings in [
+        Some(settings_json("uuid-team", "me@work.example", "org", "claude_team", SENTINEL)),
+        Some(settings_json("uuid-ent", "me@corp.example", "org", "claude_enterprise", SENTINEL)),
+        None, // API key or signed out: no oauthAccount
+    ] {
+        let home = Home::new();
+        match &settings {
+            Some(s) => std::fs::write(home.0.join(".claude.json"), s).unwrap(),
+            None => std::fs::remove_file(home.0.join(".claude.json")).unwrap(),
+        }
+        let mut log = LogBuilder::new();
+        log.assistant("s", "m", "claude-opus-4-5", T, tokens(1, 1, 0, 0));
+        write_session(&home.default_dir(), "p", "s", &log);
+        let c = collector(&home, vec![]);
+        assert!(!c.plan_supported(&c.folders()[0]));
+        assert!(matches!(c.detect(&Ctx::default()).await, Detection::NotInstalled), "nothing to read");
+        assert!(collect_all(&c, &HashMap::new()).await.is_empty(), "no batch, no usage");
+        assert!(c.triggers().iter().all(|t| !matches!(t, agentpulse_core::collector::Trigger::WatchPaths(p) if !p.is_empty())), "not watched");
+    }
+}
+
+#[tokio::test]
+async fn a_supported_folder_is_still_read_next_to_a_skipped_team_folder() {
     let home = Home::new();
+    home.default_settings("uuid-team", "me@work.example", "claude_team");
+    let personal = home.folder(".claude-personal");
+    std::fs::write(personal.join(".claude.json"), settings_json("uuid-p", "me@home.example", "org-2", "claude_pro", SENTINEL)).unwrap();
     let mut log = LogBuilder::new();
     log.assistant("s", "m", "claude-opus-4-5", T, tokens(1, 1, 0, 0));
     write_session(&home.default_dir(), "p", "s", &log);
-    let b = collect_one(&collector(&home, vec![]), &HashMap::new()).await;
-    assert_eq!(b.entitlement_scope, "anthropic:api");
-    assert_eq!(b.identity.kind, IdentityKind::AuthModeOnly);
-    assert!(b.identity.stable_value.is_none());
+    let mut mine = LogBuilder::new();
+    mine.assistant("h", "msg_home", "claude-opus-4-5", T, tokens(1, 1, 0, 0));
+    write_session(&personal, "p", "h", &mine);
+    let c = collector(&home, vec![personal]);
+    let batches = collect_all(&c, &HashMap::new()).await;
+    assert_eq!(batches.len(), 1, "only the Pro folder");
+    assert_eq!(batches[0].identity.display_label.as_deref(), Some("me@home.example (Pro)"));
+    assert_eq!(c.plan_label(&c.folders()[0]).as_deref(), Some("Team"));
 }
 
 #[tokio::test]
@@ -277,6 +310,9 @@ async fn not_installed_without_any_logs_folder() {
 async fn folders_are_deduplicated_and_suggestions_offer_only_uncollected_claude_folders() {
     let home = Home::new();
     let personal = home.folder(".claude-personal");
+    std::fs::write(personal.join(".claude.json"), settings_json("uuid-p", "me@home.example", "org", "claude_pro", SENTINEL)).unwrap();
+    let team = home.folder(".claude-work");
+    std::fs::write(team.join(".claude.json"), settings_json("uuid-t", "me@work.example", "org", "claude_team", SENTINEL)).unwrap();
     let _no_logs = std::fs::create_dir_all(home.0.join(".claude-empty"));
     let _unrelated = home.folder(".codex");
     let c = ClaudeCodeCollector::new(home.0.clone(), Some(home.default_dir()), vec![]);
@@ -390,4 +426,15 @@ fn home_dir() -> PathBuf {
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(".").to_path_buf())
+}
+
+/// Read-only: which real folders are supported. Prints plan names only.
+#[tokio::test]
+#[ignore]
+async fn real_claude_folder_plans() {
+    let home = home_dir();
+    let c = ClaudeCodeCollector::new(home.clone(), None, vec![home.join(".claude-personal")]);
+    for f in c.folders() {
+        println!("{:?}: has_logs={} supported={} plan={:?}", f.origin, f.has_logs(), c.plan_supported(&f), c.plan_label(&f));
+    }
 }

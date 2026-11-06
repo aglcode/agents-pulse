@@ -135,6 +135,56 @@ pub struct ClaudeFolderDto {
     pub origin: ClaudeFolderOrigin,
     /// Whether the folder has a `projects` log folder (otherwise nothing is read from it).
     pub has_logs: bool,
+    /// Whether AgentPulse's quota tap is this folder's status line.
+    pub quota_tap: QuotaTapState,
+    /// Whether this folder is read. Only Pro, Max and Ultra sign-ins are supported.
+    pub read: bool,
+    /// Why it isn't read, e.g. "Team plan". `None` when read.
+    pub skipped_reason: Option<String>,
+}
+
+/// What "Remove from AgentPulse" will do for a folder that isn't read, shown before confirming.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct ForgetFolderPreviewDto {
+    pub folder: String,
+    /// Accounts whose stored data will be deleted from AgentPulse's database.
+    pub accounts: Vec<String>,
+    /// Lines removed from the folder's `settings.json` (the quota tap), if it's on.
+    pub tap_block: Option<String>,
+    pub settings_path: String,
+    /// `settings.json` content the preview was made from; sent back on confirm.
+    pub before: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum QuotaTapState {
+    Off,
+    On,
+    /// The user has their own status line; AgentPulse won't replace it.
+    OtherStatusLine,
+    /// `settings.json` can't be read as JSON.
+    Unreadable,
+    /// This AgentPulse build can't be run as a status line (e.g. installed in a path with spaces).
+    Unsupported,
+    /// Claude Code doesn't report quota for this plan (only Pro, Max and Ultra), so Enable isn't offered.
+    PlanWithoutQuota,
+}
+
+/// A previewed change to a folder's `settings.json`, shown before the user confirms.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct QuotaTapPreviewDto {
+    pub folder: String,
+    pub settings_path: String,
+    pub enable: bool,
+    /// The exact lines added (enable) or removed (disable).
+    pub block: String,
+    /// The file content the preview was made from (`None`: file doesn't exist yet).
+    /// Sent back on confirm, so nothing is applied if the file changed meanwhile.
+    pub before: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]

@@ -380,3 +380,13 @@ fn parse_provider(s: &str) -> Option<ProviderId> {
 fn parse_agent(s: &str) -> Option<AgentId> {
     serde_json::from_value(serde_json::Value::String(s.to_owned())).ok()
 }
+
+/// Labels of the usage accounts an installation was ever bound to.
+pub fn accounts_for_install(conn: &Connection, agent_id: &str, install_key: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT ua.display_label FROM agent_bindings b JOIN usage_accounts ua ON ua.id = b.usage_account_id
+         WHERE b.agent_id = ?1 AND b.install_key = ?2 ORDER BY 1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![agent_id, install_key], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}

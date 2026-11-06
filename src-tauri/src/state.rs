@@ -41,12 +41,23 @@ pub fn init(app: &mut App) -> anyhow::Result<()> {
     // Opt-in: only collectors the user enabled earlier start now.
     let enabled = Engine::enabled_from_settings(&reader);
     tracing::info!(enabled = enabled.len(), "collectors enabled from settings");
+    if app.config().identifier != crate::APP_IDENTIFIER {
+        tracing::warn!("app identifier differs from APP_IDENTIFIER; the quota tap would write elsewhere");
+    }
+    // AgentPulse's own folder for quota tap snapshots. Created up front so the
+    // collector can watch it from the start.
+    let tap_dir = agentpulse_collectors::claude_code::tap::tap_dir(crate::APP_IDENTIFIER)
+        .filter(|d| std::fs::create_dir_all(d).is_ok());
     let claude = home.as_deref().map(|h| {
-        Arc::new(ClaudeCodeCollector::new(
+        let c = ClaudeCodeCollector::new(
             h.to_path_buf(),
             ClaudeCodeCollector::env_config_dir(),
             added_claude_folders(&reader),
-        ))
+        );
+        Arc::new(match tap_dir.clone() {
+            Some(d) => c.with_tap_dir(d),
+            None => c,
+        })
     });
     let engine =
         Arc::new(Engine::start(&rt, collectors(home.as_deref(), claude.clone()), &enabled, writer, reader, config));

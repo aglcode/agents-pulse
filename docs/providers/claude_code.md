@@ -120,3 +120,45 @@ Release build, both folders, first full backfill: **2.3 s** for about 593 MB of 
 **Cross-check:** an independent Python count (last line per `message.id`, `<synthetic>` excluded), sharing no code with the collector, gave **identical** numbers for `~/.claude`. For `~/.claude-personal` it found 1 more message (1,457), because an active Claude Code session was writing to that folder between the two runs.
 
 Not yet compared against Claude Code's own `/usage` or `/cost` screens: those need Claude Code to run, which writes to the folder.
+
+## Quota tap (M4b, 2026-11-06)
+Approved as "option 3": an opt-in **Enable quota** button per config folder. It's the only write AgentPulse ever makes to a Claude Code folder.
+
+- **Enabling:** after the user sees and confirms the exact lines, AgentPulse adds one block to `<folder>/settings.json`:
+  ```json
+  "statusLine": {
+    "type": "command",
+    "command": "~/…/agents-pulse.exe --statusline-tap <folder key>"
+  }
+  ```
+  - **Text edit:** the block is inserted as text in Claude Code's own `JSON.stringify(…, null, 2)` format. Every other byte (key order, spacing, CRLF) is unchanged, and each edit is verified by parsing: the result must equal the original plus exactly `statusLine`.
+  - **Refuses** to replace a status line the user already has, and refuses to apply if the file changed after the preview (e.g. a `/model` save in between).
+  - **Writes** go to a temp file, then replace `settings.json` in one rename.
+  - **Disabling** removes exactly that block. It also works after Claude Code re-saves the file (changed model or effort, new keys added) or after a sorted-key re-save. If the block was edited by hand, AgentPulse refuses rather than guess.
+- **Command:** on Windows, Claude Code runs status lines through Git Bash, or PowerShell when Git Bash is absent ([docs](https://code.claude.com/docs/en/statusline#windows-configuration)). So the path uses forward slashes and `~` for the home folder, which is documented to work in both. A path that still contains a space is refused (`unsupported`).
+- **The tap** is AgentPulse's own executable in tap mode. `main()` handles `--statusline-tap` before Tauri starts, so no window opens and the single-instance check doesn't run.
+  - It reads the documented stdin JSON and keeps only `rate_limits.five_hour` / `seven_day` (`used_percentage`, `resets_at` in epoch seconds → ms), `context_window.total_input_tokens` / `context_window_size`, and a hash of `session_id`. `cwd`, `transcript_path`, `workspace`, `model`, cost and the rest are never named.
+  - It overwrites one file, `%APPDATA%\com.angelo-almonte.agents-pulse\statusline\<folder key>.json`, using a temp file and rename.
+  - It prints `5h 24% · 7d 41% · ctx 8%`. On any error it prints nothing and exits 0.
+- **Collector:** reads `settings.json` (read-only) to see whether the tap is on, and watches the snapshot folder.
+  - A new snapshot becomes quota readings `5h` / `7d` (Local, **Documented**) and that session's context with the **real** window size, replacing the log estimate.
+  - Tap off → `requires_tool_settings_change`. Tap on with no rate limits yet → `not_yet_collected`: rate limits arrive only after a session's first reply, and only for Pro/Max/Team.
+  - Readings go stale while Claude Code isn't running.
+- **Tests (temp folders only; no real Claude folder was touched):**
+  - an enable → disable round trip on the user's own settings text is byte-identical (LF and CRLF);
+  - survives a simulated `/model` re-save;
+  - never replaces the user's own status line;
+  - stale preview refused;
+  - tap privacy sentinel (paths, names, cost, session id in clear);
+  - bad input or key → silent;
+  - collector quota and context end to end;
+  - tap off → old snapshot ignored.
+- **Shell check (scratch data folder, no Claude folder involved):** the exact `~/…/agents-pulse.exe --statusline-tap <key>` command, with the documented JSON on stdin, printed `5h 24% · 7d 41% · ctx 8%` and wrote one snapshot with no path text, through both **Git Bash** (about 170 ms warm, 1.6 s cold first start; debug build) and **Windows PowerShell 5.1** (about 0.6 s, mostly PowerShell startup).
+- **Not verified live:** clicking Enable on the user's real folders, and Claude Code actually running the command. The user is using both folders, so that first run is theirs to do.
+- **Supported plans (decided 2026-11-06): Pro, Max and Ultra only.** A folder is read only when its `oauthAccount.organizationType` is `claude_pro`, `claude_max` or `claude_ultra`. These are also the plans the status line docs say report `rate_limits`.
+  - Team, Enterprise, API-key and signed-out folders are listed with "Not read: <plan>" and are never read: no logs, no watcher, no batches.
+  - **Remove from AgentPulse** on such a folder (preview first) does three things:
+    - deletes AgentPulse's stored data for the accounts bound only to that folder (`AdminOp::ForgetInstall`; an account also bound to another folder is kept);
+    - takes the quota tap out of its `settings.json` if it's on;
+    - stops listing it, if the user had added it.
+  - Nothing is deleted automatically: a transient read failure must never cost history.
