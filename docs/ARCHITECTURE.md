@@ -398,3 +398,17 @@ Where the implementation deliberately differs from, or refines, the text above:
 ### M1 close-out (2026-11-04)
 - **Release builds suppress WebView2's browser context menu** (Refresh, Save as, Print, Inspect) via `src/app/contextMenu.ts`. It still appears on selected text and in editable fields, so Copy and Paste keep working. Dev builds keep the full menu.
 - **Memory over the 100 MB target is deferred to M10.** Risk #13 is resolved: `panic = "unwind"` is kept at a measured +4.4 MB. See `docs/perf.md`.
+
+### M4: Claude Code collector (2026-11-06)
+1. **Read-only rule.** AgentPulse never writes to, reconfigures or runs an AI tool in a way that changes its files. This drops the Claude status line tap and the Gemini telemetry edit (`docs/providers/README.md`). A collector test asserts that the tool folders are byte-for-byte unchanged after collecting.
+2. **§6.1 change:** Claude identity comes from `.claude.json → oauthAccount.accountUuid` (+ `organizationUuid`), the source this document originally planned. It is **not** `claude auth status --json` as M2 proposed, because running the CLI writes to the config folder.
+3. **One config folder = one installation.** A collector may now return several batches per run, one per installation, each with its own identity. Claude Code reads `~/.claude`, `CLAUDE_CONFIG_DIR` (if visible to the app) and user-added folders (`app_settings.claude_code.added_folders`). Matching `.claude-*` folders are suggested in the UI, never added silently.
+4. **`Engine::restart(collector_id)`** restarts a running worker so it re-reads its triggers (watch paths) after a configuration change. Availability and history are untouched.
+5. **New `UnavailableReason::RequiresToolSettingsChange`**, for metrics a provider exposes only after its own settings are changed. It's distinct from `OptInRequired`, which is an opt-in inside AgentPulse.
+6. **Context totals for Claude are Estimated** (200k, or 1M once usage passes 200k). The used value is Local.
+
+### M4b: Claude Code quota tap (2026-11-06)
+1. **The one exception to the read-only rule:** `collectors::claude_code::settings_edit` adds or removes AgentPulse's `statusLine` block in a Claude Code folder's `settings.json`. It runs only from the `set_quota_tap` command after the user confirms a `preview_quota_tap` preview. The preview's file content is sent back, so nothing is written if the file changed meanwhile.
+2. **Tap mode in the main binary** (`--statusline-tap <folder key>`, handled in `main()` before Tauri) instead of a sidecar binary: no packaging changes, and the same executable path works in dev and release. Snapshots live in `<app data>/statusline/`, computed from the environment plus `APP_IDENTIFIER` (a test checks it against `tauri.conf.json`).
+3. **No new dependencies** (`thiserror` and `memchr` were already in the tree). `serde_json/preserve_order` was deliberately **not** enabled: settings edits are text edits verified by parsing, so the user's file is never re-serialized.
+4. **Claude Code supports Pro, Max and Ultra only** (user decision, 2026-11-06). Other plans' folders are skipped by the collector. `AdminOp::ForgetInstall` is the store's only deleting operation. It runs only from the user's explicit "Remove from AgentPulse", and it deletes only accounts bound solely to that installation.

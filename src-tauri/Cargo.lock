@@ -14,9 +14,11 @@ version = "0.1.0"
 dependencies = [
  "agentpulse-core",
  "async-trait",
+ "memchr",
  "ruzstd",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "tracing",

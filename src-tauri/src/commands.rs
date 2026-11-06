@@ -1,14 +1,21 @@
 //! Tauri commands. All are `async` so DB reads never run on the main thread;
 //! reads go through the store's pooled readers on `spawn_blocking`.
 
-use agentpulse_core::dto::DashboardDto;
+use std::path::{Path, PathBuf};
+
+use agentpulse_collectors::claude_code::settings_edit::{self, TapState};
+use agentpulse_collectors::claude_code::{tap, ClaudeCodeCollector, ConfigFolder, FolderOrigin, COLLECTOR_ID as CLAUDE_ID};
+use agentpulse_core::dto::{
+    ClaudeFolderDto, ClaudeFolderOrigin, ClaudeFoldersDto, DashboardDto, ForgetFolderPreviewDto, QuotaTapPreviewDto,
+    QuotaTapState,
+};
 use agentpulse_core::ids::AgentId;
 use agentpulse_core::time::now_ms;
 use agentpulse_engine::EngineError;
 use serde::Serialize;
 use tauri::State;
 
-use crate::state::AppState;
+use crate::state::{AppState, CLAUDE_FOLDERS_SETTING};
 
 /// Error returned to the frontend: a stable code plus a sanitized message.
 #[derive(Debug, Serialize)]
@@ -91,5 +98,346 @@ pub async fn refresh(state: State<'_, AppState>, collector_id: Option<String>) -
         Ok(())
     } else {
         Err(CommandError::new("not_running", "That collector isn't enabled."))
+    }
+}
+
+/// The Claude Code config folders AgentPulse reads, plus suggestions.
+#[tauri::command]
+pub async fn get_claude_folders(state: State<'_, AppState>) -> Result<ClaudeFoldersDto, CommandError> {
+    folders_response(&state, claude(&state)?).await
+}
+
+/// Add a Claude Code config folder (e.g. one used with `CLAUDE_CONFIG_DIR`). The
+/// folder is only ever read. It must contain Claude Code's `projects` log folder.
+#[tauri::command]
+pub async fn add_claude_folder(state: State<'_, AppState>, path: String) -> Result<ClaudeFoldersDto, CommandError> {
+    let collector = claude(&state)?;
+    let path = expand_home(path.trim(), &collector.default_folder());
+    if !path.is_absolute() {
+        return Err(CommandError::new("invalid_folder", "Enter the folder's full path."));
+    }
+    if !path.join("projects").is_dir() {
+        return Err(CommandError::new(
+            "invalid_folder",
+            "That folder has no Claude Code session logs (no \"projects\" folder inside).",
+        ));
+    }
+    if collector.is_collected(&path) {
+        return Err(CommandError::new("duplicate_folder", "That folder is already being read."));
+    }
+    let mut added = added_folders(collector);
+    added.push(path);
+    apply_claude_folders(&state, collector, added).await?;
+    folders_response(&state, collector).await
+}
+
+/// Stop reading a folder the user added. Its history stays; nothing in the folder is touched.
+#[tauri::command]
+pub async fn remove_claude_folder(state: State<'_, AppState>, path: String) -> Result<ClaudeFoldersDto, CommandError> {
+    let collector = claude(&state)?;
+    let target = PathBuf::from(path);
+    let before = added_folders(collector);
+    let added: Vec<PathBuf> = before.iter().filter(|p| **p != target).cloned().collect();
+    if added.len() == before.len() {
+        return Err(CommandError::new("unknown_folder", "Only folders you added can be removed."));
+    }
+    apply_claude_folders(&state, collector, added).await?;
+    folders_response(&state, collector).await
+}
+
+fn claude<'a>(state: &'a State<'_, AppState>) -> Result<&'a ClaudeCodeCollector, CommandError> {
+    state
+        .claude
+        .as_deref()
+        .ok_or_else(|| CommandError::new("no_collector", "Claude Code folders are unavailable (home folder unknown)."))
+}
+
+fn added_folders(c: &ClaudeCodeCollector) -> Vec<PathBuf> {
+    c.folders().into_iter().filter(|f| f.origin == FolderOrigin::Added).map(|f| f.path).collect()
+}
+
+/// Persist the added folders, apply them, and restart the worker so file watching follows.
+async fn apply_claude_folders(
+    state: &State<'_, AppState>,
+    c: &ClaudeCodeCollector,
+    added: Vec<PathBuf>,
+) -> Result<(), CommandError> {
+    let value_json = serde_json::to_string(&added).unwrap_or_else(|_| "[]".into());
+    state
+        .engine
+        .writer()
+        .admin(agentpulse_store::AdminOp::SetSetting { key: CLAUDE_FOLDERS_SETTING.into(), value_json })
+        .await?;
+    c.set_added_folders(added);
+    state.engine.restart(CLAUDE_ID).await?;
+    tracing::info!(folders = c.folders().len(), "claude code folders changed");
+    Ok(())
+}
+
+/// Preview turning the quota tap on or off for one folder. Writes nothing.
+#[tauri::command]
+pub async fn preview_quota_tap(
+    state: State<'_, AppState>,
+    folder: String,
+    enable: bool,
+) -> Result<QuotaTapPreviewDto, CommandError> {
+    let collector = claude(&state)?;
+    let f = find_folder(collector, &folder)?;
+    let edit = plan_tap(collector, &f, enable)?;
+    let (removed_or_kept, added_or_kept) = match enable {
+        true => (edit.before.clone().unwrap_or_default(), edit.after.clone()),
+        false => (edit.after.clone(), edit.before.clone().unwrap_or_default()),
+    };
+    Ok(QuotaTapPreviewDto {
+        folder,
+        settings_path: edit.path.to_string_lossy().into_owned(),
+        enable,
+        block: changed_lines(&removed_or_kept, &added_or_kept),
+        before: edit.before,
+    })
+}
+
+/// Apply a previewed quota tap change: the only write AgentPulse ever makes to a
+/// Claude Code folder. `before` is the file content the user saw in the preview;
+/// nothing is written if the file has changed since.
+#[tauri::command]
+pub async fn set_quota_tap(
+    state: State<'_, AppState>,
+    folder: String,
+    enable: bool,
+    before: Option<String>,
+) -> Result<ClaudeFoldersDto, CommandError> {
+    let collector = claude(&state)?;
+    let f = find_folder(collector, &folder)?;
+    let edit = plan_tap(collector, &f, enable)?;
+    if edit.before != before {
+        return Err(changed_error());
+    }
+    settings_edit::apply(&edit).map_err(edit_error)?;
+    tracing::info!(enable, "claude code quota tap changed");
+    state.engine.refresh(Some(CLAUDE_ID));
+    folders_response(&state, collector).await
+}
+
+fn find_folder(c: &ClaudeCodeCollector, path: &str) -> Result<ConfigFolder, CommandError> {
+    c.folders()
+        .into_iter()
+        .find(|f| f.path.to_string_lossy() == path)
+        .ok_or_else(|| CommandError::new("unknown_folder", "AgentPulse isn't reading that folder."))
+}
+
+fn plan_tap(c: &ClaudeCodeCollector, f: &ConfigFolder, enable: bool) -> Result<settings_edit::Edit, CommandError> {
+    if !enable {
+        return settings_edit::plan_disable(&f.path).map_err(edit_error);
+    }
+    if !c.plan_supported(f) {
+        return Err(CommandError::new(
+            "unsupported_plan",
+            "AgentPulse supports Claude Code on Pro, Max and Ultra plans only.",
+        ));
+    }
+    let command = tap_command(c, f).ok_or_else(|| {
+        CommandError::new(
+            "unsupported",
+            "This copy of AgentPulse can't be run by Claude Code as a status line (its install path contains a space).",
+        )
+    })?;
+    settings_edit::plan_enable(&f.path, &command).map_err(edit_error)
+}
+
+/// The status line command for this AgentPulse executable, if it can be run safely.
+fn tap_command(c: &ClaudeCodeCollector, f: &ConfigFolder) -> Option<String> {
+    c.tap_dir()?;
+    let exe = std::env::current_exe().ok()?;
+    tap::command_for(&exe, c.user_home(), &f.key())
+}
+
+/// The lines that differ between `a` and `b` (the block added or removed).
+fn changed_lines(a: &str, b: &str) -> String {
+    let (a, b): (Vec<&str>, Vec<&str>) = (a.lines().collect(), b.lines().collect());
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..].iter().rev().zip(b[prefix..].iter().rev()).take_while(|(x, y)| x == y).count();
+    b[prefix..b.len() - suffix].join("\n")
+}
+
+fn changed_error() -> CommandError {
+    CommandError::new(
+        "changed",
+        "settings.json changed since the preview (for example after a /model change). Nothing was written; review the change again.",
+    )
+}
+
+fn edit_error(e: settings_edit::EditError) -> CommandError {
+    use settings_edit::EditError as E;
+    match e {
+        E::OtherStatusLine => CommandError::new(
+            "other_status_line",
+            "This folder already has its own status line. AgentPulse won't replace it.",
+        ),
+        E::AlreadyOn => CommandError::new("already_on", "The quota tap is already on for this folder."),
+        E::NotOn => CommandError::new("not_on", "The quota tap isn't on for this folder."),
+        E::InvalidJson => CommandError::new("invalid_json", "settings.json isn't valid JSON, so AgentPulse won't edit it."),
+        E::Changed => changed_error(),
+        E::Reformatted => CommandError::new(
+            "reformatted",
+            "The statusLine block was edited by hand, so AgentPulse won't guess. Remove it from settings.json yourself.",
+        ),
+        E::TooLarge => CommandError::new("too_large", "settings.json is unusually large, so AgentPulse won't edit it."),
+        E::Io(kind) => {
+            tracing::warn!(?kind, "quota tap edit failed");
+            CommandError::new("io", "Could not update settings.json. Nothing was changed.")
+        }
+    }
+}
+
+/// The folder list for the UI. A folder that isn't read is hidden once there's
+/// nothing left to remove: no data stored for it and no quota tap in its settings.
+async fn folders_response(state: &State<'_, AppState>, c: &ClaudeCodeCollector) -> Result<ClaudeFoldersDto, CommandError> {
+    let mut dto = claude_folders_dto(c);
+    let mut keep = Vec::with_capacity(dto.folders.len());
+    for (folder, cfg) in dto.folders.drain(..).zip(c.folders()) {
+        if folder.read || folder.skipped_reason.is_none() || folder.quota_tap == QuotaTapState::On {
+            keep.push(folder);
+            continue;
+        }
+        let key = cfg.key();
+        let stored = state
+            .engine
+            .reader()
+            .with_conn(move |conn| agentpulse_store::accounts_for_install(conn, AgentId::ClaudeCode.as_str(), &key))
+            .await?;
+        if !stored.is_empty() {
+            keep.push(folder);
+        }
+    }
+    dto.folders = keep;
+    Ok(dto)
+}
+
+fn claude_folders_dto(c: &ClaudeCodeCollector) -> ClaudeFoldersDto {
+    ClaudeFoldersDto {
+        folders: c
+            .folders()
+            .into_iter()
+            .map(|f| ClaudeFolderDto {
+                quota_tap: match settings_edit::tap_state(&f.path) {
+                    TapState::On => QuotaTapState::On,
+                    TapState::OtherStatusLine => QuotaTapState::OtherStatusLine,
+                    TapState::Unreadable => QuotaTapState::Unreadable,
+                    TapState::Off if !c.plan_supported(&f) => QuotaTapState::PlanWithoutQuota,
+                    TapState::Off if tap_command(c, &f).is_none() => QuotaTapState::Unsupported,
+                    TapState::Off => QuotaTapState::Off,
+                },
+                read: f.has_logs() && c.plan_supported(&f),
+                skipped_reason: skipped_reason(c, &f),
+                has_logs: f.has_logs(),
+                path: f.path.to_string_lossy().into_owned(),
+                origin: match f.origin {
+                    FolderOrigin::Default => ClaudeFolderOrigin::Default,
+                    FolderOrigin::Environment => ClaudeFolderOrigin::Environment,
+                    FolderOrigin::Added => ClaudeFolderOrigin::Added,
+                },
+            })
+            .collect(),
+        suggestions: c.suggestions().into_iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+    }
+}
+
+/// Why a folder isn't read, if it isn't.
+fn skipped_reason(c: &ClaudeCodeCollector, f: &ConfigFolder) -> Option<String> {
+    if !f.has_logs() || c.plan_supported(f) {
+        return None;
+    }
+    Some(match c.plan_label(f) {
+        Some(plan) => format!("{plan} plan"),
+        None => "no claude.ai Pro, Max or Ultra login".to_owned(),
+    })
+}
+
+/// Preview removing a folder that isn't read (e.g. a Team plan) from AgentPulse.
+/// Writes nothing.
+#[tauri::command]
+pub async fn preview_forget_claude_folder(
+    state: State<'_, AppState>,
+    folder: String,
+) -> Result<ForgetFolderPreviewDto, CommandError> {
+    let collector = claude(&state)?;
+    let f = find_folder(collector, &folder)?;
+    forgettable(collector, &f)?;
+    let key = f.key();
+    let accounts = state
+        .engine
+        .reader()
+        .with_conn(move |c| agentpulse_store::accounts_for_install(c, AgentId::ClaudeCode.as_str(), &key))
+        .await?;
+    let tap = tap_removal(&f)?;
+    Ok(ForgetFolderPreviewDto {
+        folder,
+        accounts,
+        tap_block: tap.as_ref().map(|e| changed_lines(&e.after, e.before.as_deref().unwrap_or_default())),
+        settings_path: settings_edit::settings_path(&f.path).to_string_lossy().into_owned(),
+        before: tap.and_then(|e| e.before),
+    })
+}
+
+/// Remove a folder that isn't read from AgentPulse: take AgentPulse's quota tap out of
+/// its `settings.json` (if on; only if the file is unchanged since the preview), delete
+/// its accounts' stored data from AgentPulse's own database, and stop listing it if
+/// the user had added it. Nothing else in the folder is touched.
+#[tauri::command]
+pub async fn forget_claude_folder(
+    state: State<'_, AppState>,
+    folder: String,
+    before: Option<String>,
+) -> Result<ClaudeFoldersDto, CommandError> {
+    let collector = claude(&state)?;
+    let f = find_folder(collector, &folder)?;
+    forgettable(collector, &f)?;
+    if let Some(edit) = tap_removal(&f)? {
+        if edit.before != before {
+            return Err(changed_error());
+        }
+        settings_edit::apply(&edit).map_err(edit_error)?;
+    }
+    let result = state
+        .engine
+        .writer()
+        .admin(agentpulse_store::AdminOp::ForgetInstall {
+            agent_id: AgentId::ClaudeCode.as_str().to_owned(),
+            install_key: f.key(),
+            collector_id: CLAUDE_ID.to_owned(),
+            cursor_keys: collector.cursor_keys(&f),
+        })
+        .await?;
+    tracing::info!(?result, "claude code folder removed from agentpulse");
+    if f.origin == FolderOrigin::Added {
+        let added = added_folders(collector).into_iter().filter(|p| *p != f.path).collect();
+        apply_claude_folders(&state, collector, added).await?;
+    }
+    folders_response(&state, collector).await
+}
+
+/// Only folders that aren't read can be removed (a read folder would just be collected again).
+fn forgettable(c: &ClaudeCodeCollector, f: &ConfigFolder) -> Result<(), CommandError> {
+    if f.has_logs() && c.plan_supported(f) {
+        return Err(CommandError::new("still_read", "This folder is supported and still being read."));
+    }
+    Ok(())
+}
+
+/// The quota tap removal for this folder, if the tap is on.
+fn tap_removal(f: &ConfigFolder) -> Result<Option<settings_edit::Edit>, CommandError> {
+    match settings_edit::tap_state(&f.path) {
+        TapState::On => settings_edit::plan_disable(&f.path).map(Some).map_err(edit_error),
+        _ => Ok(None),
+    }
+}
+
+/// A leading `~/` or `~\` means the user's home (the default folder's parent).
+fn expand_home(input: &str, default_folder: &Path) -> PathBuf {
+    let rest = input.strip_prefix("~/").or_else(|| input.strip_prefix("~\\"));
+    match (rest, default_folder.parent()) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(input),
     }
 }

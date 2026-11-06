@@ -47,10 +47,11 @@ pub fn build(
 /// Roadmap position of collectors not yet in this build (architecture §11).
 fn planned_note(agent: AgentId) -> Option<&'static str> {
     Some(match agent {
-        AgentId::Antigravity => "Collector planned for M3, after M2 verifies its local interface.",
-        AgentId::GeminiCli => "Collector planned for M4.",
-        AgentId::ClaudeCode => "Collector planned for M5.",
-        AgentId::Codex => "Collector planned for M6.",
+        // Order approved after M2 (docs/providers/README.md).
+        AgentId::GeminiCli => "Collector planned for M5.",
+        AgentId::Antigravity => "Collector planned for M6, after its local interface is verified.",
+        AgentId::ClaudeCode => "Collector planned for M4.",
+        AgentId::Codex => "Collector planned for M3.",
         AgentId::Mock => return None,
     })
 }

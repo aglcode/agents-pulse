@@ -104,6 +104,10 @@ pub enum UnavailableReason {
     NotAuthenticated,
     UnsupportedVersion { detected: String },
     OptInRequired,
+    /// The provider exposes this metric only after its own settings are changed
+    /// (e.g. a Claude Code status line command). AgentPulse never writes to a tool's
+    /// files, so the metric stays unavailable.
+    RequiresToolSettingsChange,
     CollectorDisabled,
     CollectionFailed,
     NotYetCollected,
