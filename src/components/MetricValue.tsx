@@ -22,6 +22,7 @@ export function reasonText(r: UnavailableReason | null): string {
     case "not_authenticated": return "Not signed in";
     case "unsupported_version": return `Unsupported version ${r.detected}`;
     case "opt_in_required": return "Requires opt-in in Settings";
+    case "requires_tool_settings_change": return "Needs a change to the tool's own settings (AgentPulse only reads)";
     case "collector_disabled": return "Collector disabled";
     case "collection_failed": return "Collection failed";
     case "not_yet_collected": return "Not collected yet";

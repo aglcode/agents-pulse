@@ -37,6 +37,9 @@ pub fn run() {
             commands::set_collector_enabled,
             commands::set_all_collectors_enabled,
             commands::refresh,
+            commands::get_claude_folders,
+            commands::add_claude_folder,
+            commands::remove_claude_folder,
         ])
         .build(tauri::generate_context!());
 

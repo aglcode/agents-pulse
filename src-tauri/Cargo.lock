@@ -14,6 +14,7 @@ version = "0.1.0"
 dependencies = [
  "agentpulse-core",
  "async-trait",
+ "memchr",
  "ruzstd",
  "serde",
  "serde_json",

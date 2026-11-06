@@ -398,3 +398,11 @@ Where the implementation deliberately differs from, or refines, the text above:
 ### M1 close-out (2026-11-04)
 - **Release builds suppress WebView2's browser context menu** (Refresh, Save as, Print, Inspect) via `src/app/contextMenu.ts`. It still appears on selected text and in editable fields, so Copy and Paste keep working. Dev builds keep the full menu.
 - **Memory over the 100 MB target is deferred to M10.** Risk #13 is resolved: `panic = "unwind"` is kept at a measured +4.4 MB. See `docs/perf.md`.
+
+### M4: Claude Code collector (2026-11-06)
+1. **Read-only rule.** AgentPulse never writes to, reconfigures or runs an AI tool in a way that changes its files. This drops the Claude status line tap and the Gemini telemetry edit (`docs/providers/README.md`). A collector test asserts that the tool folders are byte-for-byte unchanged after collecting.
+2. **§6.1 change:** Claude identity comes from `.claude.json → oauthAccount.accountUuid` (+ `organizationUuid`), the source this document originally planned. It is **not** `claude auth status --json` as M2 proposed, because running the CLI writes to the config folder.
+3. **One config folder = one installation.** A collector may now return several batches per run, one per installation, each with its own identity. Claude Code reads `~/.claude`, `CLAUDE_CONFIG_DIR` (if visible to the app) and user-added folders (`app_settings.claude_code.added_folders`). Matching `.claude-*` folders are suggested in the UI, never added silently.
+4. **`Engine::restart(collector_id)`** restarts a running worker so it re-reads its triggers (watch paths) after a configuration change. Availability and history are untouched.
+5. **New `UnavailableReason::RequiresToolSettingsChange`**, for metrics a provider exposes only after its own settings are changed. It's distinct from `OptInRequired`, which is an opt-in inside AgentPulse.
+6. **Context totals for Claude are Estimated** (200k, or 1M once usage passes 200k). The used value is Local.

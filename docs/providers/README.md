@@ -36,6 +36,15 @@ The integrations in "Decisions needed" item 2 are deferred to each tool's own mi
 | M5 | **Gemini CLI** | Needs an opt-in telemetry change; tokens only |
 | M6 | **Antigravity** | Only after a live probe is approved and the discovery mechanism is verified |
 
+## Read-only rule (decided 2026-11-06)
+**AgentPulse only reads AI tools' folders; it never writes to, reconfigures or runs them in a way that changes their files.** This settles two of the decisions below:
+- **2(b) Claude status line tap: rejected.** Claude Code quota stays Unavailable (`requires_tool_settings_change`).
+- **2(c) Gemini telemetry edit: rejected.** M5 can use telemetry only if the user has already turned it on.
+
+It also changed Claude Code identity: `claude auth status` writes to the config folder when it runs, so M4 reads `.claude.json` instead (`claude_code.md`).
+
+Still open: **2(a)** Codex `app-server` (it must first be verified not to write to `~/.codex`), and **2(d)** the Antigravity probe.
+
 ## Decisions needed
 1. **Approve the reorder above**, or keep Antigravity first. Keeping it first needs decision 2(d) right away.
 2. **Approve, per item:**

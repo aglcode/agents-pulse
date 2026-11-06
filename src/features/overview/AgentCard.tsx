@@ -5,6 +5,7 @@ import type { AgentCardDto } from "../../ipc/bindings/AgentCardDto";
 import type { ProviderId } from "../../ipc/bindings/ProviderId";
 import type { TokenTotalsDto } from "../../ipc/bindings/TokenTotalsDto";
 import { reloadDashboard, setError } from "../../store/engineStore";
+import { ClaudeFolders } from "./ClaudeFolders";
 
 const num = new Intl.NumberFormat();
 const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -101,6 +102,8 @@ export function AgentCard({ card }: { card: AgentCardDto }) {
       ) : (
         <CardBody card={card} />
       )}
+
+      {c && card.agent === "claude_code" ? <ClaudeFolders /> : null}
     </article>
   );
 }

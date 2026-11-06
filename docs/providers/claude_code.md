@@ -16,6 +16,8 @@
 Not used: `~/.claude.json` (`oauthAccount.*`). It's an internal file, and source 1 gives identity officially.
 
 ## Identity and entitlement
+> **Changed in M4 (2026-11-06):** `claude auth status --json` is **not used**. Running it writes to the config folder: with `CLAUDE_CONFIG_DIR=~/.claude` it created `~/.claude/.claude.json` and rotated a file in `~/.claude/backups/`. AgentPulse never changes a tool's files, so identity comes from reading `.claude.json → oauthAccount` instead (see Implementation below). The notes that follow are the M2 findings.
+
 - **Identity:** `claude auth status --json` → `email`, `orgId`, `authMethod`, `subscriptionType`, `loggedIn`. This gives **VerifiedEmail + org**. It doesn't return the account UUID; OTel does (`user.account_uuid`), so the identity can be upgraded to VerifiedId when telemetry is on.
 - **Scope:**
   - `authMethod: claude.ai` → `anthropic:claude_subscription`. Evidence: the status line `rate_limits` are documented as the claude.ai Pro/Max/Ultra plan windows, so Claude Code consumes the plan.
@@ -83,3 +85,38 @@ Not used: `~/.claude.json` (`oauthAccount.*`). It's an internal file, and source
 - The JSONL format is undocumented and changed shape often (24 line types seen). The parser must be narrow, version-tolerant and schema-validated.
 - The tap changes a user config file. It must chain the existing status line, and must not break it if AgentPulse is uninstalled (the command must fail safe and print nothing).
 - `claude auth status` spawns Node, so call it on detect only (minutes apart), never per batch.
+
+## Implementation (M4, 2026-11-06)
+Code: `src-tauri/crates/collectors/src/claude_code/`.
+
+**Read-only.** AgentPulse never writes to, runs or reconfigures Claude Code: no status line tap, no `claude` subprocess, no settings edits. A test (`collecting_never_writes_to_the_config_folders`) checks that every file's size, mtime and contents are unchanged after collecting.
+
+- **Config folders:** each folder is its own installation (`install_key` = hash of the normalized folder path), with its own identity, account and batch.
+  - Read automatically: `~/.claude` (default), plus `CLAUDE_CONFIG_DIR` if AgentPulse's own process can see it. On this machine it can't: the variable isn't set at the Windows user or system level, only in some terminals.
+  - Added by the user on the Claude Code card. A `.claude-*` folder in the home that has a `projects` folder is **suggested**, never added automatically.
+  - Added folders are saved in `app_settings` under `claude_code.added_folders`. Changing them restarts the collector's worker (`Engine::restart`) so file watching follows.
+- **Identity:** `.claude.json → oauthAccount` (undocumented). Only `accountUuid`, `emailAddress`, `organizationUuid` and `organizationType` are deserialized; the rest of the file (project history, settings) is skipped unread.
+  - The file is `~/.claude.json` for the default folder (falling back to `~/.claude/.claude.json`), and `<folder>/.claude.json` for any other folder.
+  - `accountUuid` → **VerifiedId** (kept as a secret, only hashed). `organizationUuid` is part of the account key. Label: `email (Plan)`, where the plan comes from `organizationType` (`claude_team` → Team).
+  - Scope: an `oauthAccount` means a claude.ai login → `anthropic:claude_subscription`. No `oauthAccount` → `anthropic:api`, install-scoped, labelled "API key or signed out".
+  - The file is re-read only when its mtime or size changes.
+- **Tokens:**
+  - From `projects/**/*.jsonl` (subagent transcripts included). A byte prefilter skips every line without `"assistant"`, so user, tool-result, attachment and `file-history-snapshot` lines are never deserialized.
+  - Dedup `claude:{message.id}`. `source_seq` = the line's byte offset, so the later (fuller) line of a repeated message wins. Every message lives in exactly one file (M2), so offsets never compete across files.
+  - `<synthetic>` messages (local errors, no API call) are skipped.
+- **Incremental reads:** every assistant line is self-contained (session id, model, timestamp), so a changed file is read **from its cursor only**. A file whose first bytes changed, or that shrank, is read again from the start; dedup makes the replay a no-op. A partial last line is left for the next run.
+- **Context:** per session, the latest **main-thread** request: `input + cache_creation + cache_read` (Local). The total is **Estimated**: 200k, or 1M once usage passes 200k. Subagent requests never drive a session's context.
+- **Quota:** **Unavailable**, with the new reason `requires_tool_settings_change`. It's only exposed through a status line command, which would mean editing Claude Code's settings.
+- **Triggers:** a recursive watcher on each folder's `projects` (2 s debounce), plus a 5-minute fallback poll. The run timeout is 300 s, for the first backfill.
+
+### Real-data check (this machine, read-only)
+Release build, both folders, first full backfill: **2.3 s** for about 593 MB of logs.
+
+| Folder | Files | Sessions | Messages | Input | Output | Cache read | Cache write | Identity |
+|---|---|---|---|---|---|---|---|---|
+| `~/.claude` | 251 | 155 | 9,966 | 317,538 | 7,904,466 | 2,156,657,267 | 41,208,723 | VerifiedId (Team) |
+| `~/.claude-personal` | 14 | 11 | 1,456 | 3,150 | 2,213,288 | 462,620,135 | 6,738,390 | VerifiedId (Pro) |
+
+**Cross-check:** an independent Python count (last line per `message.id`, `<synthetic>` excluded), sharing no code with the collector, gave **identical** numbers for `~/.claude`. For `~/.claude-personal` it found 1 more message (1,457), because an active Claude Code session was writing to that folder between the two runs.
+
+Not yet compared against Claude Code's own `/usage` or `/cost` screens: those need Claude Code to run, which writes to the folder.

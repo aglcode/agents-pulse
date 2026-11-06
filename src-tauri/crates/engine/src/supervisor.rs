@@ -264,6 +264,28 @@ impl Engine {
         Ok(true)
     }
 
+    /// Restart a running collector's worker so it re-reads its triggers (e.g. after
+    /// its folder list changed). Availability and history are untouched. Returns
+    /// false if the collector is disabled (it picks up the change when enabled).
+    pub async fn restart(&self, collector_id: &str) -> Result<bool, EngineError> {
+        let _serial = self.toggle_lock.lock().await;
+        let mut slots = self.slots.lock().map_err(|_| EngineError::UnknownCollector(collector_id.into()))?;
+        let slot = slots
+            .get_mut(collector_id)
+            .ok_or_else(|| EngineError::UnknownCollector(collector_id.to_owned()))?;
+        let Some(old) = slot.worker.take() else { return Ok(false) };
+        old.cancel();
+        slot.worker = Some(spawn_worker(
+            &self.shared,
+            &self.cancel,
+            slot.collector.clone(),
+            slot.notify.clone(),
+            Duration::ZERO,
+        ));
+        tracing::info!(collector = %collector_id, "collector restarted");
+        Ok(true)
+    }
+
     /// Enable or disable every registered collector. Returns how many changed.
     pub async fn set_all_enabled(&self, enabled: bool) -> Result<usize, EngineError> {
         let ids: Vec<String> = self.collectors().into_iter().map(|c| c.collector_id).collect();

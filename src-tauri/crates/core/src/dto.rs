@@ -116,3 +116,35 @@ pub struct DataChangedPayload {
     pub collector_ids: Vec<String>,
     pub usage_account_ids: Vec<i64>,
 }
+
+/// Claude Code config folders AgentPulse reads, for the folder settings on the
+/// Claude Code card. Paths are shown locally only and never stored in collected data.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct ClaudeFoldersDto {
+    pub folders: Vec<ClaudeFolderDto>,
+    /// `.claude-*` folders in the home that have session logs and aren't read yet.
+    /// Offered to the user; never added automatically.
+    pub suggestions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct ClaudeFolderDto {
+    pub path: String,
+    pub origin: ClaudeFolderOrigin,
+    /// Whether the folder has a `projects` log folder (otherwise nothing is read from it).
+    pub has_logs: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ClaudeFolderOrigin {
+    /// `~/.claude`, Claude Code's default.
+    Default,
+    /// `CLAUDE_CONFIG_DIR`, as seen by AgentPulse.
+    Environment,
+    /// Added by the user.
+    Added,
+}

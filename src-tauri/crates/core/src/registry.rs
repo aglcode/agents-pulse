@@ -40,7 +40,7 @@ pub const AGENTS: &[AgentSpec] = &[
         display_name: "Claude Code",
         default_scope: "anthropic:claude_subscription",
         allowed_scopes: &["anthropic:claude_subscription", "anthropic:api"],
-        scope_evidence: "unverified: pending M2 (docs/providers/claude_code.md)",
+        scope_evidence: "verified M2: status line rate_limits are documented as the claude.ai plan windows, so claude.ai logins consume the plan; API-key use is anthropic:api (docs/providers/claude_code.md)",
     },
     AgentSpec {
         agent: AgentId::Codex,
