@@ -61,6 +61,8 @@ pub fn run() {
             commands::set_quota_tap,
             commands::preview_forget_claude_folder,
             commands::forget_claude_folder,
+            commands::preview_skip_default_claude_folder,
+            commands::skip_default_claude_folder,
         ])
         .build(tauri::generate_context!());
 

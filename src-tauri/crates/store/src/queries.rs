@@ -390,3 +390,25 @@ pub fn accounts_for_install(conn: &Connection, agent_id: &str, install_key: &str
     let rows = stmt.query_map(rusqlite::params![agent_id, install_key], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
+
+/// How much of the stored data belongs to these sessions: (sessions, usage records,
+/// input + output tokens). For previewing what removing one installation deletes.
+pub fn sessions_summary(conn: &Connection, agent_id: &str, session_keys: &[String]) -> Result<(i64, i64, i64)> {
+    let mut find = conn.prepare(
+        "SELECT s.id, COUNT(u.id), IFNULL(SUM(IFNULL(u.input_tokens, 0) + IFNULL(u.output_tokens, 0)), 0)
+         FROM sessions s LEFT JOIN usage_records u ON u.session_id = s.id
+         WHERE s.agent_id = ?1 AND s.external_session_key = ?2 GROUP BY s.id",
+    )?;
+    let (mut sessions, mut records, mut tokens) = (0, 0, 0);
+    for key in session_keys {
+        let row = find
+            .query_row(rusqlite::params![agent_id, key], |r| Ok((r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            .optional()?;
+        if let Some((n, t)) = row {
+            sessions += 1;
+            records += n;
+            tokens += t;
+        }
+    }
+    Ok((sessions, records, tokens))
+}

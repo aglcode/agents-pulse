@@ -4,6 +4,7 @@ import type { AgentId } from "./bindings/AgentId";
 import type { ClaudeFoldersDto } from "./bindings/ClaudeFoldersDto";
 import type { ForgetFolderPreviewDto } from "./bindings/ForgetFolderPreviewDto";
 import type { QuotaTapPreviewDto } from "./bindings/QuotaTapPreviewDto";
+import type { SkipDefaultFolderPreviewDto } from "./bindings/SkipDefaultFolderPreviewDto";
 import type { DashboardDto } from "./bindings/DashboardDto";
 
 export type CommandError = { code: string; message: string };
@@ -65,6 +66,16 @@ export function previewForgetClaudeFolder(folder: string): Promise<ForgetFolderP
 /** Apply a previewed removal. Refused if settings.json changed since `preview`. */
 export function forgetClaudeFolder(preview: ForgetFolderPreviewDto): Promise<ClaudeFoldersDto> {
   return invoke<ClaudeFoldersDto>("forget_claude_folder", { folder: preview.folder, before: preview.before });
+}
+
+/** What turning off the default folder (~/.claude) on this machine would delete from AgentPulse's database. Writes nothing. */
+export function previewSkipDefaultClaudeFolder(): Promise<SkipDefaultFolderPreviewDto> {
+  return invoke<SkipDefaultFolderPreviewDto>("preview_skip_default_claude_folder");
+}
+
+/** Stop reading the default folder on this machine and delete its data from AgentPulse's database. The folder isn't touched. */
+export function skipDefaultClaudeFolder(): Promise<ClaudeFoldersDto> {
+  return invoke<ClaudeFoldersDto>("skip_default_claude_folder");
 }
 
 export function errorMessage(e: unknown): string {

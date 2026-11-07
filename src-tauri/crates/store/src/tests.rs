@@ -740,10 +740,11 @@ async fn forgetting_an_install_deletes_only_accounts_bound_solely_to_it() {
             install_key: "i1".into(),
             collector_id: "test".into(),
             cursor_keys: vec!["cur-team".into()],
+            session_keys: vec!["sess-team".into()],
         })
         .await
         .unwrap();
-    assert_eq!(r, AdminResult::InstallForgotten { accounts_deleted: 1, accounts_kept: 0 });
+    assert_eq!(r, AdminResult::InstallForgotten { accounts_deleted: 1, accounts_kept: 0, sessions_deleted: 0 });
     let gone = |table: &str, col: &str, id: i64| count(&reader, &format!("SELECT COUNT(*) FROM {table} WHERE {col} = {id}"));
     for (table, col) in [
         ("usage_accounts", "id"),
@@ -764,12 +765,76 @@ async fn forgetting_an_install_deletes_only_accounts_bound_solely_to_it() {
     // An account also bound to another install is kept; only this install's binding goes.
     let r = w
         .handle()
-        .admin(AdminOp::ForgetInstall { agent_id: "mock".into(), install_key: "i3".into(), collector_id: "test".into(), cursor_keys: vec![] })
+        .admin(AdminOp::ForgetInstall {
+            agent_id: "mock".into(),
+            install_key: "i3".into(),
+            collector_id: "test".into(),
+            cursor_keys: vec![],
+            session_keys: vec![],
+        })
         .await
         .unwrap();
-    assert_eq!(r, AdminResult::InstallForgotten { accounts_deleted: 0, accounts_kept: 1 });
+    assert_eq!(r, AdminResult::InstallForgotten { accounts_deleted: 0, accounts_kept: 1, sessions_deleted: 0 });
     assert_eq!(gone("usage_records", "usage_account_id", shared), 2, "shared history kept");
     assert_eq!(count(&reader, "SELECT COUNT(*) FROM agent_bindings WHERE install_key = 'i3'"), 0);
+    assert_rollups_match_rebuild(&w, &reader).await;
+    w.shutdown(Duration::from_secs(2)).await.unwrap();
+}
+
+/// Two installs signed in to the same account (e.g. `~/.claude` and `~/.claude-personal`
+/// with one Pro login): forgetting one deletes only its own sessions and their usage.
+#[tokio::test]
+async fn forgetting_one_install_of_a_shared_account_deletes_only_its_sessions() {
+    let db = TestDb::new();
+    let (w, reader) = db.open();
+    let with_session = |install: &str, key: &str, at: i64| {
+        let mut b = batch(install, at);
+        b.sessions = vec![SessionObservation {
+            session_key: format!("sess-{key}"),
+            model: None,
+            started_at: at,
+            last_activity_at: at,
+            ended_at: None,
+            status: SessionStatus::Idle,
+        }];
+        b.usage = vec![UsageEvent { session_key: Some(format!("sess-{key}")), ..usage(key, 1, at, None, tokens(Some(7), Some(3), None, None)) }];
+        b.contexts = vec![ContextObservation {
+            session_key: format!("sess-{key}"),
+            used_tokens: 1,
+            total_tokens: Some(10),
+            total_source: SourceKind::Estimated,
+            observed_at: at,
+            source: SourceKind::Local,
+            stability: Stability::Undocumented,
+        }];
+        b
+    };
+    let acct = w.handle().submit(resolved(with_session("default", "d", T0), "acct-pro")).await.unwrap().usage_account_id;
+    w.handle().submit(resolved(with_session("personal", "p", T0 + 1), "acct-pro")).await.unwrap();
+
+    let r = w
+        .handle()
+        .admin(AdminOp::ForgetInstall {
+            agent_id: "mock".into(),
+            install_key: "default".into(),
+            collector_id: "test".into(),
+            cursor_keys: vec![],
+            // An unknown key and another install's key that isn't listed are both left alone.
+            session_keys: vec!["sess-d".into(), "sess-unknown".into()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(r, AdminResult::InstallForgotten { accounts_deleted: 0, accounts_kept: 1, sessions_deleted: 1 });
+    let n = |sql: &str| count(&reader, sql);
+    assert_eq!(n(&format!("SELECT COUNT(*) FROM usage_accounts WHERE id = {acct}")), 1, "account kept");
+    assert_eq!(n("SELECT COUNT(*) FROM sessions WHERE external_session_key = 'sess-d'"), 0);
+    assert_eq!(n("SELECT COUNT(*) FROM sessions WHERE external_session_key = 'sess-p'"), 1);
+    assert_eq!(n("SELECT COUNT(*) FROM usage_records WHERE dedup_key = 'd'"), 0, "the removed install's usage is gone");
+    assert_eq!(n("SELECT COUNT(*) FROM usage_records WHERE dedup_key = 'p'"), 1, "the other install's usage stays");
+    assert_eq!(n("SELECT COUNT(*) FROM context_segments"), 1);
+    assert_eq!(n("SELECT COUNT(*) FROM agent_bindings WHERE install_key = 'default'"), 0);
+    assert_eq!(n("SELECT COUNT(*) FROM agent_bindings WHERE install_key = 'personal'"), 1);
+    assert_eq!(n("SELECT IFNULL(SUM(input_tokens), 0) FROM usage_hourly"), 7, "rollups rebuilt without the removed usage");
     assert_rollups_match_rebuild(&w, &reader).await;
     w.shutdown(Duration::from_secs(2)).await.unwrap();
 }

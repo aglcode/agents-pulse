@@ -7,7 +7,7 @@ use agentpulse_collectors::claude_code::settings_edit::{self, TapState};
 use agentpulse_collectors::claude_code::{tap, ClaudeCodeCollector, ConfigFolder, FolderOrigin, COLLECTOR_ID as CLAUDE_ID};
 use agentpulse_core::dto::{
     ClaudeFolderDto, ClaudeFolderOrigin, ClaudeFoldersDto, DashboardDto, ForgetFolderPreviewDto, QuotaTapPreviewDto,
-    QuotaTapState,
+    QuotaTapState, SkipDefaultFolderPreviewDto,
 };
 use agentpulse_core::ids::AgentId;
 use agentpulse_core::time::now_ms;
@@ -15,7 +15,7 @@ use agentpulse_engine::EngineError;
 use serde::Serialize;
 use tauri::State;
 
-use crate::state::{AppState, CLAUDE_FOLDERS_SETTING};
+use crate::state::{AppState, CLAUDE_FOLDERS_SETTING, CLAUDE_SKIP_DEFAULT_SETTING};
 
 /// Error returned to the frontend: a stable code plus a sanitized message.
 #[derive(Debug, Serialize)]
@@ -117,6 +117,7 @@ pub async fn get_claude_folders(state: State<'_, AppState>) -> Result<ClaudeFold
 
 /// Add a Claude Code config folder (e.g. one used with `CLAUDE_CONFIG_DIR`). The
 /// folder is only ever read. It must contain Claude Code's `projects` log folder.
+/// Adding the default folder after it was turned off turns it back on.
 #[tauri::command]
 pub async fn add_claude_folder(state: State<'_, AppState>, path: String) -> Result<ClaudeFoldersDto, CommandError> {
     let collector = claude(&state)?;
@@ -132,6 +133,12 @@ pub async fn add_claude_folder(state: State<'_, AppState>, path: String) -> Resu
     }
     if collector.is_collected(&path) {
         return Err(CommandError::new("duplicate_folder", "That folder is already being read."));
+    }
+    if collector.default_skipped() && collector.is_default_folder(&path) {
+        // Adding the default folder back is how it's turned on again on this machine.
+        set_default_skipped(&state, collector, false).await?;
+        tracing::info!("claude code default folder turned back on");
+        return folders_response(&state, collector).await;
     }
     let mut added = added_folders(collector);
     added.push(path);
@@ -351,6 +358,100 @@ fn claude_folders_dto(c: &ClaudeCodeCollector) -> ClaudeFoldersDto {
     }
 }
 
+/// The default folder as a `ConfigFolder`, whether or not it's currently listed.
+fn default_config_folder(c: &ClaudeCodeCollector) -> ConfigFolder {
+    ConfigFolder { path: c.default_folder(), origin: FolderOrigin::Default }
+}
+
+/// Hashed session keys of the default folder's logs (read-only, off the main thread).
+async fn default_session_keys(c: &ClaudeCodeCollector) -> Result<Vec<String>, CommandError> {
+    let folder = default_config_folder(c);
+    tauri::async_runtime::spawn_blocking(move || folder.session_keys())
+        .await
+        .map_err(|_| CommandError::new("io", "Could not read the folder's session logs."))?
+        .map_err(|e| {
+            tracing::warn!(error = %e, "listing default folder sessions failed");
+            CommandError::new("io", "Could not read the folder's session logs.")
+        })
+}
+
+/// Preview turning off Claude Code's default folder on this machine: what AgentPulse
+/// would delete from its own database. Reads the folder's logs; writes nothing.
+#[tauri::command]
+pub async fn preview_skip_default_claude_folder(state: State<'_, AppState>) -> Result<SkipDefaultFolderPreviewDto, CommandError> {
+    let collector = claude(&state)?;
+    let folder = default_config_folder(collector);
+    if collector.default_skipped() {
+        return Err(CommandError::new("already_skipped", "The default folder is already turned off on this machine."));
+    }
+    if settings_edit::tap_state(&folder.path) == TapState::On {
+        return Err(CommandError::new("tap_on", "Disable quota for this folder first."));
+    }
+    let keys = default_session_keys(collector).await?;
+    let install_key = folder.key();
+    let (accounts, (sessions, records, tokens)) = state
+        .engine
+        .reader()
+        .with_conn(move |c| {
+            let agent = AgentId::ClaudeCode.as_str();
+            Ok((
+                agentpulse_store::accounts_for_install(c, agent, &install_key)?,
+                agentpulse_store::sessions_summary(c, agent, &keys)?,
+            ))
+        })
+        .await?;
+    Ok(SkipDefaultFolderPreviewDto {
+        folder: folder.path.to_string_lossy().into_owned(),
+        accounts,
+        sessions,
+        records,
+        tokens,
+    })
+}
+
+/// Turn off Claude Code's default folder (`~/.claude`) on this machine: stop reading
+/// and watching it, and delete the data that came from it from AgentPulse's own
+/// database. Nothing in the folder is touched. Other machines are unaffected: the
+/// choice is stored in this machine's database only.
+#[tauri::command]
+pub async fn skip_default_claude_folder(state: State<'_, AppState>) -> Result<ClaudeFoldersDto, CommandError> {
+    let collector = claude(&state)?;
+    let folder = default_config_folder(collector);
+    if settings_edit::tap_state(&folder.path) == TapState::On {
+        return Err(CommandError::new("tap_on", "Disable quota for this folder first."));
+    }
+    let keys = default_session_keys(collector).await?;
+    let cursor_keys = collector.cursor_keys(&folder);
+    // Stop reading first. A cancelled run never submits, and the writer applies
+    // operations in order, so nothing from the folder lands after the delete.
+    set_default_skipped(&state, collector, true).await?;
+    let result = state
+        .engine
+        .writer()
+        .admin(agentpulse_store::AdminOp::ForgetInstall {
+            agent_id: AgentId::ClaudeCode.as_str().to_owned(),
+            install_key: folder.key(),
+            collector_id: CLAUDE_ID.to_owned(),
+            cursor_keys,
+            session_keys: keys,
+        })
+        .await?;
+    tracing::info!(?result, "claude code default folder turned off on this machine");
+    folders_response(&state, collector).await
+}
+
+/// Persist the choice, apply it, and restart the worker so file watching follows.
+async fn set_default_skipped(state: &State<'_, AppState>, c: &ClaudeCodeCollector, skip: bool) -> Result<(), CommandError> {
+    state
+        .engine
+        .writer()
+        .admin(agentpulse_store::AdminOp::SetSetting { key: CLAUDE_SKIP_DEFAULT_SETTING.into(), value_json: skip.to_string() })
+        .await?;
+    c.set_default_skipped(skip);
+    state.engine.restart(CLAUDE_ID).await?;
+    Ok(())
+}
+
 /// Why a folder isn't read, if it isn't.
 fn skipped_reason(c: &ClaudeCodeCollector, f: &ConfigFolder) -> Option<String> {
     if !f.has_logs() || c.plan_supported(f) {
@@ -415,6 +516,7 @@ pub async fn forget_claude_folder(
             install_key: f.key(),
             collector_id: CLAUDE_ID.to_owned(),
             cursor_keys: collector.cursor_keys(&f),
+            session_keys: Vec::new(),
         })
         .await?;
     tracing::info!(?result, "claude code folder removed from agentpulse");

@@ -95,6 +95,12 @@ Code: `src-tauri/crates/collectors/src/claude_code/`.
   - Read automatically: `~/.claude` (default), plus `CLAUDE_CONFIG_DIR` if AgentPulse's own process can see it. On this machine it can't: the variable isn't set at the Windows user or system level, only in some terminals.
   - Added by the user on the Claude Code card. A `.claude-*` folder in the home that has a `projects` folder is **suggested**, never added automatically.
   - Added folders are saved in `app_settings` under `claude_code.added_folders`. Changing them restarts the collector's worker (`Engine::restart`) so file watching follows.
+  - **The default folder can be turned off per machine** ("Don't read on this machine", 2026-11-07):
+    - **Why:** on a machine where `~/.claude.json` holds the same login as another folder, `~/.claude` would otherwise be counted as that account's usage.
+    - **Setting:** saved as `claude_code.skip_default_folder` in this machine's database. It's missing on a new install, so other machines read `~/.claude` as usual.
+    - **Effect:** a skipped default is dropped by path, whether it came in as the default, through `CLAUDE_CONFIG_DIR` or as an added folder. It's never read, watched or suggested.
+    - **Data:** turning it off deletes the folder's own sessions and their usage and context from AgentPulse's database. Sessions are found by recomputing their hashed keys from the folder's logs, read-only. An account shared with another folder is kept, along with that folder's data.
+    - **Turning it back on:** add `~\.claude` again; its history is re-read.
 - **Identity:** `.claude.json → oauthAccount` (undocumented). Only `accountUuid`, `emailAddress`, `organizationUuid` and `organizationType` are deserialized; the rest of the file (project history, settings) is skipped unread.
   - The file is `~/.claude.json` for the default folder (falling back to `~/.claude/.claude.json`), and `<folder>/.claude.json` for any other folder.
   - `accountUuid` → **VerifiedId** (kept as a secret, only hashed). `organizationUuid` is part of the account key. Label: `email (Plan)`, where the plan comes from `organizationType` (`claude_team` → Team).

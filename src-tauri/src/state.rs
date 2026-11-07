@@ -16,6 +16,10 @@ use tracing_appender::non_blocking::WorkerGuard;
 
 /// `app_settings` key: JSON array of Claude Code config folders the user added.
 pub const CLAUDE_FOLDERS_SETTING: &str = "claude_code.added_folders";
+/// `app_settings` key: `true` when the user turned off Claude Code's default folder
+/// (`~/.claude`) on this machine. Per machine (it lives in this machine's database);
+/// missing means the default folder is read, as on any new install.
+pub const CLAUDE_SKIP_DEFAULT_SETTING: &str = "claude_code.skip_default_folder";
 
 pub struct AppState {
     pub engine: Arc<Engine>,
@@ -56,6 +60,8 @@ pub fn init(app: &mut App) -> anyhow::Result<()> {
             ClaudeCodeCollector::env_config_dir(),
             added_claude_folders(&reader),
         );
+        // Before the engine starts, so a turned-off default folder is never read.
+        c.set_default_skipped(skip_default_claude_folder(&reader));
         Arc::new(match tap_dir.clone() {
             Some(d) => c.with_tap_dir(d),
             None => c,
@@ -151,6 +157,16 @@ fn added_claude_folders(reader: &agentpulse_store::Reader) -> Vec<PathBuf> {
         .flatten()
         .and_then(|json| serde_json::from_str::<Vec<PathBuf>>(&json).ok())
         .unwrap_or_default()
+}
+
+/// Whether the default Claude Code folder is turned off on this machine. Missing or malformed → read it.
+fn skip_default_claude_folder(reader: &agentpulse_store::Reader) -> bool {
+    reader
+        .with_conn_blocking(|c| agentpulse_store::get_setting(c, CLAUDE_SKIP_DEFAULT_SETTING))
+        .ok()
+        .flatten()
+        .and_then(|json| serde_json::from_str::<bool>(&json).ok())
+        .unwrap_or(false)
 }
 
 fn init_logging(app: &App) -> anyhow::Result<WorkerGuard> {

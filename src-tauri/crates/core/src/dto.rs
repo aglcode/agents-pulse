@@ -131,6 +131,23 @@ pub struct ClaudeFoldersDto {
     pub suggestions: Vec<String>,
 }
 
+/// What "Don't read on this machine" will do for the default folder, shown before confirming.
+/// Only AgentPulse's own database changes; nothing in the folder is touched.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct SkipDefaultFolderPreviewDto {
+    pub folder: String,
+    /// Accounts the folder is bound to. Accounts bound only to it are deleted with all
+    /// their history; accounts shared with another folder keep everything else.
+    pub accounts: Vec<String>,
+    /// Stored sessions that came from this folder (deleted).
+    pub sessions: i64,
+    /// Stored usage records in those sessions (deleted).
+    pub records: i64,
+    /// Input + output tokens in those records.
+    pub tokens: i64,
+}
+
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 pub struct ClaudeFolderDto {

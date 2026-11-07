@@ -26,9 +26,17 @@ pub enum AdminOp {
     MarkCollectorDisabled { collector_id: String },
     /// The user removed an installation from AgentPulse: delete every usage account
     /// bound **only** to it, with all their history, plus the given read cursors.
-    /// Accounts also bound to another installation are kept (usage can't be split
-    /// by installation); only this installation's bindings are removed from them.
-    ForgetInstall { agent_id: String, install_key: String, collector_id: String, cursor_keys: Vec<String> },
+    /// Accounts also bound to another installation are kept, and only this
+    /// installation's bindings are removed from them, plus the sessions in
+    /// `session_keys` (the installation's own, hashed by its collector) with their
+    /// usage and context. Hourly rollups are then rebuilt.
+    ForgetInstall {
+        agent_id: String,
+        install_key: String,
+        collector_id: String,
+        cursor_keys: Vec<String>,
+        session_keys: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +47,7 @@ pub enum AdminResult {
     RollupsRebuilt { rows: i64 },
     SettingSaved,
     CollectorMarkedDisabled,
-    InstallForgotten { accounts_deleted: usize, accounts_kept: usize },
+    InstallForgotten { accounts_deleted: usize, accounts_kept: usize, sessions_deleted: usize },
 }
 
 pub(crate) fn apply_admin(conn: &mut Connection, op: AdminOp) -> Result<AdminResult> {
@@ -153,13 +161,13 @@ pub(crate) fn apply_admin(conn: &mut Connection, op: AdminOp) -> Result<AdminRes
             )?;
             AdminResult::CollectorMarkedDisabled
         }
-        AdminOp::ForgetInstall { agent_id, install_key, collector_id, cursor_keys } => {
+        AdminOp::ForgetInstall { agent_id, install_key, collector_id, cursor_keys, session_keys } => {
             let accounts: Vec<i64> = tx
                 .prepare("SELECT DISTINCT usage_account_id FROM agent_bindings WHERE agent_id = ?1 AND install_key = ?2")?
                 .query_map(params![agent_id, install_key], |r| r.get(0))?
                 .collect::<std::result::Result<_, _>>()?;
-            let (mut deleted, mut kept) = (0, 0);
-            for id in accounts {
+            let (mut deleted, mut kept, mut sessions_deleted) = (0, 0, 0);
+            for &id in &accounts {
                 let other_installs: i64 = tx.query_row(
                     "SELECT COUNT(*) FROM agent_bindings WHERE usage_account_id = ?1
                      AND NOT (agent_id = ?2 AND install_key = ?3)",
@@ -168,6 +176,7 @@ pub(crate) fn apply_admin(conn: &mut Connection, op: AdminOp) -> Result<AdminRes
                 )?;
                 if other_installs > 0 {
                     kept += 1;
+                    sessions_deleted += forget_sessions(&tx, id, &agent_id, &session_keys)?;
                     continue;
                 }
                 for sql in FORGET_ACCOUNT_SQL {
@@ -187,11 +196,33 @@ pub(crate) fn apply_admin(conn: &mut Connection, op: AdminOp) -> Result<AdminRes
                     params![collector_id, key],
                 )?;
             }
-            AdminResult::InstallForgotten { accounts_deleted: deleted, accounts_kept: kept }
+            if sessions_deleted > 0 {
+                tx.execute("DELETE FROM usage_hourly", [])?;
+                tx.execute(REBUILD_HOURLY_SQL, [HOUR_MS])?;
+            }
+            AdminResult::InstallForgotten { accounts_deleted: deleted, accounts_kept: kept, sessions_deleted }
         }
     };
     tx.commit()?;
     Ok(result)
+}
+
+/// Delete these sessions of one account, with their usage records and context. Returns how many.
+fn forget_sessions(tx: &Connection, account_id: i64, agent_id: &str, session_keys: &[String]) -> Result<usize> {
+    let mut find = tx.prepare(
+        "SELECT id FROM sessions WHERE usage_account_id = ?1 AND agent_id = ?2 AND external_session_key = ?3",
+    )?;
+    let mut n = 0;
+    for key in session_keys {
+        let Some(session_id) = find.query_row(params![account_id, agent_id, key], |r| r.get::<_, i64>(0)).optional()? else {
+            continue;
+        };
+        tx.execute("DELETE FROM context_segments WHERE session_id = ?1", [session_id])?;
+        tx.execute("DELETE FROM usage_records WHERE session_id = ?1", [session_id])?;
+        tx.execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
+        n += 1;
+    }
+    Ok(n)
 }
 
 /// Everything that belongs to one usage account, children first (`?1` = account id).
