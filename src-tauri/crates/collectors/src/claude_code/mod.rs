@@ -9,7 +9,8 @@
 //!
 //! One Claude Code *config folder* is one installation: the default `~/.claude`,
 //! the folder named by `CLAUDE_CONFIG_DIR` (if AgentPulse can see it), and any
-//! folder the user adds. Each folder gets its own batch, identity and account, so
+//! folder the user adds. The default folder is read unless the user turned it off
+//! on this machine ([`ClaudeCodeCollector::set_default_skipped`]). Each folder gets its own batch, identity and account, so
 //! two folders signed in to different Claude accounts never share usage.
 //!
 //! Never reads `.credentials.json`.
@@ -28,6 +29,7 @@ mod tap_tests;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
@@ -81,6 +83,14 @@ impl ConfigFolder {
         self.install_key()
     }
 
+    /// Hashed keys of every session AgentPulse stores for this folder, for deleting
+    /// only this folder's data when its account is shared with another folder. Reads
+    /// the logs (never writes) the same way collecting does. Blocking.
+    pub fn session_keys(&self) -> Result<Vec<String>, CollectorError> {
+        let scan = scan_folder(&self.path, &self.install_key(), &HashMap::new(), &CancellationToken::new())?;
+        Ok(scan.sessions.into_iter().map(|s| s.session_key).collect())
+    }
+
     fn install_key(&self) -> String {
         stable_hash(&["claude-config-dir", &normalize(&self.path)])
     }
@@ -93,6 +103,8 @@ pub struct ClaudeCodeCollector {
     user_home: PathBuf,
     env_dir: Option<PathBuf>,
     folders: RwLock<Vec<ConfigFolder>>,
+    /// The user turned off the default folder on this machine: never read, watched or suggested.
+    skip_default: AtomicBool,
     signins: Mutex<SigninCache>,
     /// AgentPulse's own folder for tap snapshots (`None`: quota tap unavailable).
     tap_dir: Option<PathBuf>,
@@ -108,6 +120,7 @@ impl ClaudeCodeCollector {
             user_home,
             env_dir,
             folders: RwLock::new(Vec::new()),
+            skip_default: AtomicBool::new(false),
             signins: Mutex::new(HashMap::new()),
             tap_dir: None,
             tap_seen: Mutex::new(HashMap::new()),
@@ -154,10 +167,33 @@ impl ClaudeCodeCollector {
         }
         list.extend(added.into_iter().map(|path| ConfigFolder { path, origin: FolderOrigin::Added }));
         let mut seen = std::collections::HashSet::new();
-        list.retain(|f| seen.insert(normalize(&f.path)));
+        let skip = self.default_skipped().then(|| normalize(&self.default_folder()));
+        // A skipped default folder is dropped however it got here (default, `CLAUDE_CONFIG_DIR`, added).
+        list.retain(|f| {
+            let n = normalize(&f.path);
+            skip.as_ref() != Some(&n) && seen.insert(n)
+        });
         if let Ok(mut f) = self.folders.write() {
             *f = list;
         }
+    }
+
+    /// Turn the default folder (`~/.claude`) off or back on for this machine. Off:
+    /// it's not listed, read, watched or suggested. The caller persists the choice
+    /// and restarts the worker.
+    pub fn set_default_skipped(&self, skip: bool) {
+        self.skip_default.store(skip, Ordering::SeqCst);
+        let added = self.folders().into_iter().filter(|f| f.origin == FolderOrigin::Added).map(|f| f.path).collect();
+        self.set_added_folders(added);
+    }
+
+    pub fn default_skipped(&self) -> bool {
+        self.skip_default.load(Ordering::SeqCst)
+    }
+
+    /// Whether `path` is Claude Code's default folder.
+    pub fn is_default_folder(&self, path: &Path) -> bool {
+        normalize(path) == normalize(&self.default_folder())
     }
 
     /// Whether `path` is already collected.
@@ -177,6 +213,7 @@ impl ClaudeCodeCollector {
             .filter(|e| e.file_name().to_string_lossy().starts_with(".claude"))
             .map(|e| e.path())
             .filter(|p| files::has_logs_folder(p) && !self.is_collected(p))
+            .filter(|p| !(self.default_skipped() && self.is_default_folder(p)))
             .filter(|p| self.plan_supported(&ConfigFolder { path: p.clone(), origin: FolderOrigin::Added }))
             .collect();
         out.sort();

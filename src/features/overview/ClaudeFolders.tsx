@@ -10,14 +10,17 @@ import {
   getClaudeFolders,
   previewForgetClaudeFolder,
   previewQuotaTap,
+  previewSkipDefaultClaudeFolder,
   removeClaudeFolder,
   setQuotaTap,
+  skipDefaultClaudeFolder,
 } from "../../ipc/commands";
 import type { ClaudeFolderDto } from "../../ipc/bindings/ClaudeFolderDto";
 import type { ClaudeFolderOrigin } from "../../ipc/bindings/ClaudeFolderOrigin";
 import type { ClaudeFoldersDto } from "../../ipc/bindings/ClaudeFoldersDto";
 import type { ForgetFolderPreviewDto } from "../../ipc/bindings/ForgetFolderPreviewDto";
 import type { QuotaTapPreviewDto } from "../../ipc/bindings/QuotaTapPreviewDto";
+import type { SkipDefaultFolderPreviewDto } from "../../ipc/bindings/SkipDefaultFolderPreviewDto";
 import { reloadDashboard } from "../../store/engineStore";
 
 const ORIGIN: Record<ClaudeFolderOrigin, string> = {
@@ -36,6 +39,7 @@ export function ClaudeFolders() {
   const [path, setPath] = useState("");
   const [preview, setPreview] = useState<QuotaTapPreviewDto | null>(null);
   const [forget, setForget] = useState<ForgetFolderPreviewDto | null>(null);
+  const [skip, setSkip] = useState<SkipDefaultFolderPreviewDto | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -82,6 +86,23 @@ export function ClaudeFolders() {
     }
   };
 
+  const openSkip = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setSkip(await previewSkipDefaultClaudeFolder());
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmSkip = async () => {
+    await run(skipDefaultClaudeFolder);
+    setSkip(null);
+  };
+
   const confirmForget = async (p: ForgetFolderPreviewDto) => {
     await run(() => forgetClaudeFolder(p));
     setForget(null);
@@ -115,6 +136,11 @@ export function ClaudeFolders() {
               <span className="flex shrink-0 items-center gap-2 text-[10px] uppercase tracking-wide text-zinc-500">
                 {ORIGIN[f.origin]}
                 {f.has_logs ? null : <span className="text-amber-700 dark:text-amber-300">no logs</span>}
+                {f.origin === "default" ? (
+                  <button type="button" className={buttonClass} disabled={busy} onClick={() => void openSkip()}>
+                    Don't read on this machine
+                  </button>
+                ) : null}
                 {f.origin === "added" ? (
                   <button type="button" className={buttonClass} disabled={busy} onClick={() => void run(() => removeClaudeFolder(f.path))}>
                     Remove
@@ -135,6 +161,9 @@ export function ClaudeFolders() {
             ) : null}
             {forget?.folder === f.path ? (
               <ForgetPreview preview={forget} busy={busy} onConfirm={confirmForget} onCancel={() => setForget(null)} />
+            ) : null}
+            {skip?.folder === f.path ? (
+              <SkipPreview preview={skip} busy={busy} onConfirm={confirmSkip} onCancel={() => setSkip(null)} />
             ) : null}
             {preview?.folder === f.path ? (
               <TapPreview preview={preview} busy={busy} onConfirm={confirm} onCancel={() => setPreview(null)} />
@@ -283,6 +312,51 @@ function ForgetPreview({
         </button>
         <button type="button" className={primaryClass} disabled={busy} onClick={() => void onConfirm(preview)}>
           Remove
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SkipPreview({
+  preview,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  preview: SkipDefaultFolderPreviewDto;
+  busy: boolean;
+  onConfirm: () => Promise<void>;
+  onCancel: () => void;
+}) {
+  const n = (v: number) => v.toLocaleString();
+  return (
+    <div role="region" aria-label="Review turning off the default folder" className="flex flex-col gap-2 rounded-md border border-amber-400 p-3 text-xs dark:border-amber-600">
+      <p>On this machine, AgentPulse will:</p>
+      <ul className="list-disc pl-5">
+        <li>
+          Stop reading and watching <span className="font-mono">{preview.folder}</span>.
+        </li>
+        {preview.sessions > 0 ? (
+          <li>
+            Delete its summaries of the {n(preview.sessions)} sessions that came from it ({n(preview.records)} usage
+            records, {n(preview.tokens)} input + output tokens) from its own database.
+            {preview.accounts.length > 0 ? <> The account ({preview.accounts.join(", ")}) and its data from your other folders stay.</> : <> Data from your other folders stays.</>}
+          </li>
+        ) : (
+          <li>Delete nothing from its database (no sessions are stored for this folder).</li>
+        )}
+      </ul>
+      <p className="text-zinc-500 dark:text-zinc-400">
+        Nothing in the folder changes: your chats, login and settings stay as they are. Other computers keep reading
+        their own default folder. To read it again later, add it back below (<span className="font-mono">~\.claude</span>).
+      </p>
+      <div className="flex justify-end gap-2">
+        <button type="button" className={buttonClass} disabled={busy} onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="button" className={primaryClass} disabled={busy} onClick={() => void onConfirm()}>
+          Stop reading
         </button>
       </div>
     </div>

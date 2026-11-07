@@ -362,6 +362,68 @@ async fn collecting_never_writes_to_the_config_folders() {
     assert_eq!(snapshot(&home.0), before, "a file in the home or a config folder changed");
 }
 
+/// "Don't read on this machine": the default folder is dropped however it got in
+/// (default, `CLAUDE_CONFIG_DIR`, added) and is never read, watched or suggested.
+#[tokio::test]
+async fn a_skipped_default_folder_is_not_listed_read_watched_or_suggested() {
+    let home = Home::new();
+    let personal = home.folder(".claude-personal");
+    std::fs::write(personal.join(".claude.json"), settings_json("uuid-default", "me@default.example", "org-1", "claude_pro", SENTINEL)).unwrap();
+    let mut log = LogBuilder::new();
+    log.assistant("s", "m_default", "claude-opus-4-5", T, tokens(1, 1, 0, 0));
+    write_session(&home.default_dir(), "p", "s", &log);
+    let mut mine = LogBuilder::new();
+    mine.assistant("h", "m_personal", "claude-opus-4-5", T, tokens(2, 2, 0, 0));
+    write_session(&personal, "p", "h", &mine);
+
+    // Also named by CLAUDE_CONFIG_DIR, to check it's dropped by path, not by origin.
+    let c = ClaudeCodeCollector::new(home.0.clone(), Some(home.default_dir()), vec![personal.clone()]);
+    assert_eq!(collect_all(&c, &HashMap::new()).await.len(), 2, "both read before");
+
+    c.set_default_skipped(true);
+    assert!(c.default_skipped());
+    let paths: Vec<_> = c.folders().into_iter().map(|f| f.path).collect();
+    assert_eq!(paths, vec![personal.clone()], "only the added folder is listed; added folders are kept");
+    let batches = collect_all(&c, &HashMap::new()).await;
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].usage.iter().map(|u| u.dedup_key.as_str()).collect::<Vec<_>>(), vec!["claude:m_personal"]);
+    let watched = c.triggers().into_iter().find_map(|t| match t {
+        agentpulse_core::collector::Trigger::WatchPaths(p) => Some(p),
+        _ => None,
+    });
+    assert!(!watched.unwrap().contains(&home.default_dir().join("projects")), "not watched");
+    assert!(c.suggestions().is_empty(), "not offered as a suggestion either");
+
+    c.set_default_skipped(false);
+    assert_eq!(c.folders().len(), 2, "turned back on; the added folder is still there");
+    assert_eq!(collect_all(&c, &HashMap::new()).await.len(), 2);
+}
+
+/// The session keys listed for deleting a folder's data are exactly the keys its
+/// collected sessions are stored under, and listing them writes nothing.
+#[tokio::test]
+async fn session_keys_match_collected_sessions_and_listing_never_writes() {
+    let home = Home::new();
+    let mut a = LogBuilder::new();
+    a.content_lines("s1", SENTINEL, T).assistant("s1", "m1", "claude-opus-4-5", T2, tokens(1, 1, 0, 0));
+    write_session(&home.default_dir(), "p", "s1", &a);
+    let mut b = LogBuilder::new();
+    b.assistant("s2", "m2", "claude-opus-4-5", T3, tokens(1, 1, 0, 0));
+    write_session(&home.default_dir(), "q", "s2", &b);
+
+    let c = collector(&home, vec![]);
+    let folder = c.folders().remove(0);
+    let before = snapshot(&home.0);
+    let mut keys = folder.session_keys().unwrap();
+    assert_eq!(snapshot(&home.0), before, "listing session keys changed a file");
+    let batch = collect_one(&c, &HashMap::new()).await;
+    let mut collected: Vec<_> = batch.sessions.iter().map(|s| s.session_key.clone()).collect();
+    keys.sort();
+    collected.sort();
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys, collected);
+}
+
 /// Every file under `root`: (size, mtime, content hash).
 fn snapshot(root: &Path) -> BTreeMap<String, (u64, std::time::SystemTime, String)> {
     let mut out = BTreeMap::new();

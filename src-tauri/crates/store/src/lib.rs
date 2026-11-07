@@ -18,7 +18,7 @@ pub use admin::{AdminOp, AdminResult};
 pub use apply::ApplySummary;
 pub use error::{Result, StoreError};
 pub use queries::{
-    accounts_for_install, collector_statuses, cursors_for, get_setting, models_today, overview, FreshnessPolicy,
+    accounts_for_install, collector_statuses, sessions_summary, cursors_for, get_setting, models_today, overview, FreshnessPolicy,
 };
 pub use reader::Reader;
 pub use schema::SCHEMA_VERSION;
