@@ -32,10 +32,9 @@ pub struct AppState {
 pub fn init(app: &mut App) -> anyhow::Result<()> {
     let log_guard = init_logging(app)?;
 
-    let data_dir = app.path().app_data_dir()?;
-    let db_path = data_dir.join("agentpulse.db");
+    let db_path = database_dir(app)?.join("agentpulse.db");
     let (writer, reader) = agentpulse_store::open(&db_path)?;
-    tracing::info!(schema = agentpulse_store::SCHEMA_VERSION, "database ready");
+    tracing::info!(schema = agentpulse_store::SCHEMA_VERSION, dev_data_dir = cfg!(debug_assertions), "database ready");
 
     let home = app.path().home_dir().ok();
     let config = EngineConfig { home_dir: home.clone(), ..EngineConfig::default() };
@@ -112,6 +111,36 @@ fn collectors(
         list.push(Arc::new(MockCollector::new("mock-healthy", MockBehavior::Healthy, Duration::from_secs(15))));
     }
     list
+}
+
+/// Where the database lives.
+/// * **Dev builds** (`pnpm tauri dev`): `<repo>/.data/`, git-ignored, so development
+///   data stays with the project and works the same in a dev container.
+/// * **Release builds**: the OS app-data folder (`%APPDATA%\<identifier>` on Windows,
+///   `~/Library/Application Support/<identifier>` on macOS). An installed app can't
+///   write next to its code.
+///
+/// Only the database moves: the Claude quota tap's snapshots stay in the app-data
+/// folder, because the status line command written into Claude Code's settings
+/// computes that path on its own.
+fn database_dir(app: &App) -> anyhow::Result<PathBuf> {
+    #[cfg(debug_assertions)]
+    {
+        let _ = app;
+        let dir = dev_data_dir();
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        Ok(app.path().app_data_dir()?)
+    }
+}
+
+/// `<repo>/.data`, from the `src-tauri` crate's location at compile time.
+#[cfg(debug_assertions)]
+fn dev_data_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap_or(Path::new(env!("CARGO_MANIFEST_DIR"))).join(".data")
 }
 
 /// User-added Claude Code folders from settings. Missing or malformed → none.

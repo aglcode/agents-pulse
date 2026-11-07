@@ -23,6 +23,9 @@ dist-ssr
 *.sln
 *.sw?
 
+# AgentPulse dev database (pnpm tauri dev): local usage data, never committed
+.data/
+
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/schemas/
