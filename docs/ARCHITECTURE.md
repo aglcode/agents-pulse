@@ -420,3 +420,8 @@ Where the implementation deliberately differs from, or refines, the text above:
 4. **Context totals are Estimated** from a small Gemini model table. An unknown model gets no total (`total_source = unavailable`) rather than a guess.
 5. **`AgentCardDto.source_note`** carries a per-tool note about data sources (Gemini CLI: telemetry state). It's filled only while that collector is enabled, so a disabled tool's files are never read. No new commands.
 6. **Verified on real data** (read-only, before/after metadata snapshot of `~/.gemini` identical): 4 logs, 2 sessions, 39 usage records, in about 0.1 s.
+
+### Dev database location (2026-11-07)
+- **Dev builds** (`pnpm tauri dev`, `debug_assertions`) keep the database in `<repo>/.data/agentpulse.db`, git-ignored, so development data stays with the project and works the same in the planned dev container.
+- **Release builds** keep the OS app-data folder (§5): an installed app can't write next to its code.
+- Only the database moved. The Claude quota tap's snapshots stay in `<app data>/statusline/`, because the status line command in Claude Code's settings computes that path itself.
