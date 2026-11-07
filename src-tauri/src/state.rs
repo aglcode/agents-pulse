@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use agentpulse_collectors::claude_code::ClaudeCodeCollector;
 use agentpulse_collectors::codex::CodexCollector;
+use agentpulse_collectors::gemini_cli::GeminiCliCollector;
 use agentpulse_core::collector::Collector;
 use agentpulse_engine::{Engine, EngineConfig};
 use tauri::{App, Manager};
@@ -20,6 +21,8 @@ pub struct AppState {
     pub engine: Arc<Engine>,
     /// The Claude Code collector, kept so its folder list can be changed at runtime.
     pub claude: Option<Arc<ClaudeCodeCollector>>,
+    /// The Gemini CLI collector, kept so the dashboard can say whether telemetry is on.
+    pub gemini: Option<Arc<GeminiCliCollector>>,
     /// Flushes the log file on drop; taken during shutdown.
     pub log_guard: Mutex<Option<WorkerGuard>>,
     pub shutting_down: AtomicBool,
@@ -59,14 +62,22 @@ pub fn init(app: &mut App) -> anyhow::Result<()> {
             None => c,
         })
     });
-    let engine =
-        Arc::new(Engine::start(&rt, collectors(home.as_deref(), claude.clone()), &enabled, writer, reader, config));
+    let gemini = home.as_deref().map(|h| Arc::new(GeminiCliCollector::new(GeminiCliCollector::default_home(h))));
+    let engine = Arc::new(Engine::start(
+        &rt,
+        collectors(home.as_deref(), claude.clone(), gemini.clone()),
+        &enabled,
+        writer,
+        reader,
+        config,
+    ));
 
     crate::events::spawn_bridge(app.handle().clone(), engine.clone());
 
     app.manage(AppState {
         engine,
         claude,
+        gemini,
         log_guard: Mutex::new(Some(log_guard)),
         shutting_down: AtomicBool::new(false),
         shutdown_done: AtomicBool::new(false),
@@ -77,14 +88,22 @@ pub fn init(app: &mut App) -> anyhow::Result<()> {
 /// Every registered collector. Registration doesn't start anything: collectors are
 /// opt-in and only run once the user enables them. Debug builds also get a synthetic
 /// collector to exercise the pipeline; release builds never do.
-fn collectors(user_home: Option<&Path>, claude: Option<Arc<ClaudeCodeCollector>>) -> Vec<Arc<dyn Collector>> {
+fn collectors(
+    user_home: Option<&Path>,
+    claude: Option<Arc<ClaudeCodeCollector>>,
+    gemini: Option<Arc<GeminiCliCollector>>,
+) -> Vec<Arc<dyn Collector>> {
     let mut list: Vec<Arc<dyn Collector>> = Vec::new();
     if let Some(c) = claude {
         list.push(c);
     }
     if let Some(home) = user_home {
         list.push(Arc::new(CodexCollector::new(CodexCollector::default_home(home))));
-    } else {
+    }
+    if let Some(g) = gemini {
+        list.push(g);
+    }
+    if user_home.is_none() {
         tracing::warn!("home directory unknown; local collectors unavailable");
     }
     #[cfg(debug_assertions)]

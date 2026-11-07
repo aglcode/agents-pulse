@@ -11,12 +11,14 @@ What each AI tool **actually** exposes on this machine, checked against the inst
 
 | | Claude Code 2.1.318 | Codex 0.157.0 | Gemini CLI 0.40.0 | Antigravity IDE 2.5.5 |
 |---|---|---|---|---|
-| **Tokens** | ✅ local JSONL (undocumented) | ✅ local rollouts (undocumented) | ✅ official telemetry *(opt-in config)* | ❌ no source found |
+| **Tokens** | ✅ local JSONL (undocumented) | ✅ local rollouts (undocumented) | ✅ local session JSONL (undocumented, M5) · telemetry detected only | ❌ no source found |
 | **Quota** | ✅ status line, documented *(opt-in config)* | ✅ rollouts, last seen · live via app-server ⏳ | ❌ internal API only | ⚠️ undocumented LS API ⏳ |
-| **Context** | ✅ status line *(opt-in)* · or JSONL + estimated total | ✅ rollouts | used: telemetry · total: estimated | ⚠️ total only ⏳ |
-| **Identity** | ✅ `claude auth status --json` (official CLI) | ✅ app-server `account/read` ⏳ · or install-scoped | ✅ telemetry / `google_accounts.json` | ⏳ install-scoped until verified |
-| **Works with no config change** | tokens, identity | **everything except live quota** | identity only | — |
-| **Needs your approval** | edit `~/.claude/settings.json` (status line tap) | run `codex app-server` (contacts OpenAI via your client) | edit `~/.gemini/settings.json` (telemetry) | read LS process args (CSRF token) + live probe |
+| **Context** | ✅ status line *(opt-in)* · or JSONL + estimated total | ✅ rollouts | used: session JSONL · total: estimated | ⚠️ total only ⏳ |
+| **Identity** | ✅ `claude auth status --json` (official CLI) | ✅ app-server `account/read` ⏳ · or install-scoped | ✅ `google_accounts.json` | ⏳ install-scoped until verified |
+| **Works with no config change** | tokens, identity | **everything except live quota** | **everything except quota** (M5) | — |
+| **Needs your approval** | edit `~/.claude/settings.json` (status line tap) | run `codex app-server` (contacts OpenAI via your client) | ~~edit `~/.gemini/settings.json` (telemetry)~~ not needed since M5 | read LS process args (CSRF token) + live probe |
+
+*The Gemini CLI column was updated after M5 (2026-11-07); the rest is as verified in M2.*
 
 ## Findings that change the plan
 1. **Antigravity's discovery mechanism changed.** All daemon files are stale (Feb 2026, LS 1.19.4, dead PIDs). Version 2.5.5 appears to pass its CSRF token on the process command line. Antigravity also offers **no token usage** source. It's the weakest and riskiest integration, not the strongest.
@@ -42,6 +44,14 @@ The integrations in "Decisions needed" item 2 are deferred to each tool's own mi
 - **2(c) Gemini telemetry edit: rejected.** M5 can use telemetry only if the user has already turned it on.
 
 It also changed Claude Code identity: `claude auth status` writes to the config folder when it runs, so M4 reads `.claude.json` instead (`claude_code.md`).
+
+## Gemini CLI token source (decided 2026-11-07)
+With the telemetry edit rejected, M5 would only have shipped identity. **Approved instead:**
+- **Session logs:** read Gemini CLI's own session logs (`~/.gemini/tmp/<project>/chats/*.jsonl`) for **usage fields only**, the same way as Claude Code and Codex.
+- **What this reverses:** M2's "never read `~/.gemini/tmp/**`", for `chats/` only. `logs.json`, `.project_root` and `oauth_creds.json` are still never opened.
+- **Telemetry:** detected and shown on the card, not read. Its format is unverified, and it records the same API calls (no double counting).
+
+Details in [`gemini_cli.md`](gemini_cli.md).
 
 Still open: **2(a)** Codex `app-server` (it must first be verified not to write to `~/.codex`), and **2(d)** the Antigravity probe.
 

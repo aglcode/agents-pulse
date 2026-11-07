@@ -442,7 +442,7 @@ fn scan_folder(
         out.bad_lines += read.bad_lines;
         // Session key for lines without a session id: the file itself.
         let file_session = stable_hash(&["claude-session-file", &log.source_key]);
-        for (line, offset) in read.lines.into_iter().zip(read.offsets) {
+        for (line, offset) in read.items.into_iter().zip(read.offsets) {
             let session_key = match &line.session_id {
                 Some(id) => stable_hash(&["claude-session", install_key, id]),
                 None => file_session.clone(),

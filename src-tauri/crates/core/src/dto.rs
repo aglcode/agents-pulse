@@ -85,6 +85,9 @@ pub struct AgentCardDto {
     pub collector: Option<CollectorCardDto>,
     /// Shown when `collector` is `None`, e.g. "Collector planned for M5."
     pub planned_note: Option<String>,
+    /// A note about where this tool's data comes from (e.g. Gemini CLI telemetry
+    /// state). Only set while the collector is enabled.
+    pub source_note: Option<String>,
     /// Usage accounts currently bound to this agent.
     pub accounts: Vec<AccountSummaryDto>,
     /// Per-model breakdown of today's tokens (only while the tokens metric is available).

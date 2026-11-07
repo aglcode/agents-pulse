@@ -103,6 +103,10 @@ export function AgentCard({ card }: { card: AgentCardDto }) {
         <CardBody card={card} />
       )}
 
+      {c && enabled && card.source_note ? (
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">{card.source_note}</p>
+      ) : null}
+
       {c && card.agent === "claude_code" ? <ClaudeFolders /> : null}
     </article>
   );

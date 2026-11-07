@@ -15,6 +15,11 @@ collector: CollectorCardDto | null,
  */
 planned_note: string | null, 
 /**
+ * A note about where this tool's data comes from (e.g. Gemini CLI telemetry
+ * state). Only set while the collector is enabled.
+ */
+source_note: string | null, 
+/**
  * Usage accounts currently bound to this agent.
  */
 accounts: Array<AccountSummaryDto>, 
