@@ -64,7 +64,7 @@ pub const AGENTS: &[AgentSpec] = &[
         display_name: "Gemini CLI",
         default_scope: "google:gemini_cli",
         allowed_scopes: &["google:gemini_cli", "google:gemini_api", "google:vertex"],
-        scope_evidence: "unverified: pending M2 (docs/providers/gemini_cli.md); kept separate from Antigravity",
+        scope_evidence: "verified M2/M5: scope follows settings.json security.auth.selectedType (oauth-personal → Code Assist, gemini-api-key, vertex-ai) (docs/providers/gemini_cli.md); kept separate from Antigravity",
     },
     AgentSpec {
         agent: AgentId::Mock,

@@ -4,5 +4,7 @@
 
 pub mod claude_code;
 pub mod codex;
+pub mod gemini_cli;
+mod jsonl_tail;
 #[cfg(feature = "mock")]
 pub mod mock;

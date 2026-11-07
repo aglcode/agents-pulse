@@ -1,5 +1,6 @@
 //! Assembles the dashboard: one card per AI tool, in registry order.
 
+use agentpulse_collectors::gemini_cli::TelemetryState;
 use agentpulse_core::dto::{
     AgentCardDto, CollectorCardDto, CollectorStatusDto, DashboardDto, ModelUsageDto, OverviewDto,
 };
@@ -14,6 +15,7 @@ pub fn build(
     models: Vec<(AgentId, ModelUsageDto)>,
     statuses: Vec<CollectorStatusDto>,
     collectors: Vec<CollectorInfo>,
+    source_notes: &[(AgentId, String)],
 ) -> DashboardDto {
     let mut agents = Vec::with_capacity(AGENTS.len());
     for spec in AGENTS {
@@ -37,11 +39,26 @@ pub fn build(
             provider: spec.provider,
             collector,
             planned_note,
+            source_note: source_notes.iter().find(|(a, _)| *a == spec.agent).map(|(_, n)| n.clone()),
             accounts: overview.accounts.iter().filter(|a| a.agents.contains(&spec.agent)).cloned().collect(),
             models_today: models.iter().filter(|(a, _)| *a == spec.agent).map(|(_, m)| m.clone()).collect(),
         });
     }
     DashboardDto { generated_at: now, agents }
+}
+
+/// Gemini CLI's telemetry, as the user set it. AgentPulse never changes it, and
+/// tokens come from the session logs either way (docs/providers/gemini_cli.md).
+pub fn gemini_telemetry_note(t: TelemetryState) -> &'static str {
+    match t {
+        TelemetryState::Off => "Telemetry is off in Gemini CLI. It isn't needed: tokens come from its session logs.",
+        TelemetryState::LocalFile => {
+            "Telemetry is on in Gemini CLI, but AgentPulse doesn't read it yet. Tokens come from its session logs."
+        }
+        TelemetryState::Other => {
+            "Gemini CLI sends telemetry elsewhere; AgentPulse doesn't read it. Tokens come from its session logs."
+        }
+    }
 }
 
 /// Roadmap position of collectors not yet in this build (architecture §11).
@@ -66,7 +83,7 @@ mod tests {
 
     #[test]
     fn every_real_tool_gets_a_card_and_missing_collectors_say_so() {
-        let d = build(0, OverviewDto { generated_at: 0, accounts: vec![] }, vec![], vec![], vec![]);
+        let d = build(0, OverviewDto { generated_at: 0, accounts: vec![] }, vec![], vec![], vec![], &[]);
         let names: Vec<_> = d.agents.iter().map(|a| a.agent).collect();
         assert_eq!(names, vec![AgentId::ClaudeCode, AgentId::Codex, AgentId::Antigravity, AgentId::GeminiCli]);
         assert!(d.agents.iter().all(|a| a.collector.is_none() && a.planned_note.is_some()));
@@ -80,10 +97,28 @@ mod tests {
             vec![(AgentId::Mock, ModelUsageDto { model: "m".into(), input: 1, output: 2, records: 1 })],
             vec![],
             vec![info("mock-healthy", AgentId::Mock, true)],
+            &[],
         );
         let mock = d.agents.iter().find(|a| a.agent == AgentId::Mock).unwrap();
         assert!(mock.collector.as_ref().unwrap().enabled);
         assert!(mock.planned_note.is_none());
         assert_eq!(mock.models_today.len(), 1);
+    }
+
+    #[test]
+    fn gemini_card_carries_its_source_note_and_no_planned_note() {
+        let note = gemini_telemetry_note(TelemetryState::Off).to_owned();
+        let d = build(
+            0,
+            OverviewDto { generated_at: 0, accounts: vec![] },
+            vec![],
+            vec![],
+            vec![info("gemini-cli", AgentId::GeminiCli, true)],
+            &[(AgentId::GeminiCli, note.clone())],
+        );
+        let g = d.agents.iter().find(|a| a.agent == AgentId::GeminiCli).unwrap();
+        assert!(g.planned_note.is_none());
+        assert_eq!(g.source_note.as_deref(), Some(note.as_str()));
+        assert!(d.agents.iter().filter(|a| a.agent != AgentId::GeminiCli).all(|a| a.source_note.is_none()));
     }
 }

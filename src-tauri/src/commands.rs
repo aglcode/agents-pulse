@@ -64,7 +64,15 @@ pub async fn get_dashboard(state: State<'_, AppState>, utc_offset_minutes: i32) 
             ))
         })
         .await?;
-    Ok(crate::dashboard::build(now, overview, models, statuses, state.engine.collectors()))
+    let collectors = state.engine.collectors();
+    let mut notes = Vec::new();
+    // Read Gemini CLI's settings only once the user has enabled its collector.
+    if let Some(g) = &state.gemini
+        && collectors.iter().any(|c| c.agent == AgentId::GeminiCli && c.enabled)
+    {
+        notes.push((AgentId::GeminiCli, crate::dashboard::gemini_telemetry_note(g.telemetry()).to_owned()));
+    }
+    Ok(crate::dashboard::build(now, overview, models, statuses, collectors, &notes))
 }
 
 /// Enable or disable the collector for one AI tool. Choices are persisted.
