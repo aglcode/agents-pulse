@@ -61,12 +61,15 @@ pub fn gemini_telemetry_note(t: TelemetryState) -> &'static str {
     }
 }
 
+/// What Antigravity's card says about its data (docs/providers/antigravity.md).
+pub const ANTIGRAVITY_NOTE: &str = "Tokens come from Antigravity's conversation files. Quota isn't available: Antigravity shows it only in its own app. Conversations saved only in its older encrypted format aren't counted.";
+
 /// Roadmap position of collectors not yet in this build (architecture §11).
 fn planned_note(agent: AgentId) -> Option<&'static str> {
     Some(match agent {
         // Order approved after M2 (docs/providers/README.md).
         AgentId::GeminiCli => "Collector planned for M5.",
-        AgentId::Antigravity => "Collector planned for M6, after its local interface is verified.",
+        AgentId::Antigravity => "Collector planned for M6.",
         AgentId::ClaudeCode => "Collector planned for M4.",
         AgentId::Codex => "Collector planned for M3.",
         AgentId::Mock => return None,

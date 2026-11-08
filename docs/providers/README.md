@@ -11,14 +11,14 @@ What each AI tool **actually** exposes on this machine, checked against the inst
 
 | | Claude Code 2.1.318 | Codex 0.157.0 | Gemini CLI 0.40.0 | Antigravity IDE 2.5.5 |
 |---|---|---|---|---|
-| **Tokens** | ✅ local JSONL (undocumented) | ✅ local rollouts (undocumented) | ✅ local session JSONL (undocumented, M5) · telemetry detected only | ❌ no source found |
-| **Quota** | ✅ status line, documented *(opt-in config)* | ✅ rollouts, last seen · live via app-server ⏳ | ❌ internal API only | ⚠️ undocumented LS API ⏳ |
-| **Context** | ✅ status line *(opt-in)* · or JSONL + estimated total | ✅ rollouts | used: session JSONL · total: estimated | ⚠️ total only ⏳ |
-| **Identity** | ✅ `claude auth status --json` (official CLI) | ✅ app-server `account/read` ⏳ · or install-scoped | ✅ `google_accounts.json` | ⏳ install-scoped until verified |
-| **Works with no config change** | tokens, identity | **everything except live quota** | **everything except quota** (M5) | — |
-| **Needs your approval** | edit `~/.claude/settings.json` (status line tap) | run `codex app-server` (contacts OpenAI via your client) | ~~edit `~/.gemini/settings.json` (telemetry)~~ not needed since M5 | read LS process args (CSRF token) + live probe |
+| **Tokens** | ✅ local JSONL (undocumented) | ✅ local rollouts (undocumented) | ✅ local session JSONL (undocumented, M5) · telemetry detected only | ✅ local conversation databases (undocumented, M6) |
+| **Quota** | ✅ status line, documented *(opt-in config)* | ✅ rollouts, last seen · live via app-server ⏳ | ❌ internal API only | ❌ undocumented LS API only (not approved) |
+| **Context** | ✅ status line *(opt-in)* · or JSONL + estimated total | ✅ rollouts | used: session JSONL · total: estimated | used: conversation databases · total: unavailable |
+| **Identity** | ✅ `claude auth status --json` (official CLI) | ✅ app-server `account/read` ⏳ · or install-scoped | ✅ `google_accounts.json` | install-scoped (one account per data folder) |
+| **Works with no config change** | tokens, identity | **everything except live quota** | **everything except quota** (M5) | **tokens and context used** (M6) |
+| **Needs your approval** | edit `~/.claude/settings.json` (status line tap) | run `codex app-server` (contacts OpenAI via your client) | ~~edit `~/.gemini/settings.json` (telemetry)~~ not needed since M5 | quota only: read LS process args (CSRF token) + live probe |
 
-*The Gemini CLI column was updated after M5 (2026-11-07); the rest is as verified in M2.*
+*The Gemini CLI column was updated after M5 (2026-11-07) and the Antigravity column after M6 (2026-11-08); the rest is as verified in M2.*
 
 ## Findings that change the plan
 1. **Antigravity's discovery mechanism changed.** All daemon files are stale (Feb 2026, LS 1.19.4, dead PIDs). Version 2.5.5 appears to pass its CSRF token on the process command line. Antigravity also offers **no token usage** source. It's the weakest and riskiest integration, not the strongest.
@@ -53,7 +53,15 @@ With the telemetry edit rejected, M5 would only have shipped identity. **Approve
 
 Details in [`gemini_cli.md`](gemini_cli.md).
 
-Still open: **2(a)** Codex `app-server` (it must first be verified not to write to `~/.codex`), and **2(d)** the Antigravity probe.
+## Antigravity token source (decided 2026-11-08)
+With the live probe (2(d)) not approved, M6 had no data source. **Approved instead,** after read-only research on copies (`antigravity.md`):
+- **Conversation databases:** read `~/.gemini/antigravity-ide/conversations/*.db` and `~/.gemini/antigravity/conversations/*.db`, plus each one's `-wal`, for **usage fields and model names only**.
+  - They're read into memory and opened there, so nothing is created in Antigravity's folders and no copy is written to disk.
+- **What this reverses:** architecture §6.2's "never read Antigravity `conversations/`", for `*.db` and `*.db-wal` only.
+  - Still never opened: `*.pb`, `*.db-shm`, `brain/`, `knowledge/`, `daemon/` and `~/.gemini/antigravity-backup/`.
+- **Quota stays unavailable:** the LS probe (2(d)) is still not approved.
+
+Still open: **2(a)** Codex `app-server` (it must first be verified not to write to `~/.codex`), and **2(d)** the Antigravity probe (quota only).
 
 ## Decisions needed
 1. **Approve the reorder above**, or keep Antigravity first. Keeping it first needs decision 2(d) right away.

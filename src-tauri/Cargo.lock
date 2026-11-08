@@ -15,6 +15,7 @@ dependencies = [
  "agentpulse-core",
  "async-trait",
  "memchr",
+ "rusqlite",
  "ruzstd",
  "serde",
  "serde_json",

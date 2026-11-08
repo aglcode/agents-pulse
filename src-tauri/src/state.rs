@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(debug_assertions)]
 use std::time::Duration;
 
+use agentpulse_collectors::antigravity::AntigravityCollector;
 use agentpulse_collectors::claude_code::ClaudeCodeCollector;
 use agentpulse_collectors::codex::CodexCollector;
 use agentpulse_collectors::gemini_cli::GeminiCliCollector;
@@ -104,6 +105,9 @@ fn collectors(
     }
     if let Some(home) = user_home {
         list.push(Arc::new(CodexCollector::new(CodexCollector::default_home(home))));
+    }
+    if let Some(home) = user_home {
+        list.push(Arc::new(AntigravityCollector::new(AntigravityCollector::default_dir(home))));
     }
     if let Some(g) = gemini {
         list.push(g);
