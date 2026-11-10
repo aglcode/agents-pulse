@@ -9,6 +9,9 @@ async-trait = "0.1.92"
 # Already in the tree via serde_json; used for the Claude Code line prefilter.
 memchr = "2.8.3"
 ruzstd = "0.9.1"
+# Already in the tree via the store. `serialize` opens Antigravity's conversation
+# databases from memory, so no copy of a conversation is ever written to disk.
+rusqlite = { version = "0.41.1", features = ["bundled", "serialize"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["raw_value"] }
 thiserror = "2.0.21"

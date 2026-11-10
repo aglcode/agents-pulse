@@ -425,3 +425,22 @@ Where the implementation deliberately differs from, or refines, the text above:
 - **Dev builds** (`pnpm tauri dev`, `debug_assertions`) keep the database in `<repo>/.data/agentpulse.db`, git-ignored, so development data stays with the project and works the same in the planned dev container.
 - **Release builds** keep the OS app-data folder (§5): an installed app can't write next to its code.
 - Only the database moved. The Claude quota tap's snapshots stay in `<app data>/statusline/`, because the status line command in Claude Code's settings computes that path itself.
+
+### M6: Antigravity collector (2026-11-08)
+1. **Tokens come from Antigravity's conversation databases** (`~/.gemini/{antigravity-ide,antigravity}/conversations/*.db` + `-wal`), not from the language server. This was a user decision on 2026-11-08 (`docs/providers/README.md`), after read-only research on copies (`docs/providers/antigravity.md`).
+   - It reverses §6.2's "never read `conversations/`" for `*.db` / `*.db-wal` only.
+   - §7 (LS discovery, CSRF token, `reqwest`, version map, cargo feature) isn't implemented: no LS call is approved, so quota is `NotExposedByProvider`.
+   - §7's "never parse protobuf state files" still holds for the encrypted `*.pb` files.
+2. **Databases are opened from memory.** The `.db` and `-wal` are read into memory, and the log's committed frames are replayed there (`antigravity/wal.rs`, checked against SQLite in tests). The image is opened with rusqlite's `serialize` feature.
+   - Nothing is created in Antigravity's folders (no `-shm` or journal).
+   - No copy of a conversation, which holds prompts, is ever written to disk.
+3. **Dependency:** `rusqlite` (already in the workspace via the store) is now also a dependency of `agentpulse-collectors`, with the `serialize` feature. Protobuf is read by a small hand-written wire-format reader (`antigravity/proto.rs`), not `prost`, because only a handful of field numbers are needed and no `.proto` files are available.
+4. **Steps are the only usage source.** Every generation record duplicates a step, so `gen_metadata` is read only for model names.
+   - Names come from the same conversation's records: `response_model` first, then `model_display_name`, otherwise `unknown`.
+   - The `Model` enum's value names are placeholders and are never used.
+5. **Context total is Unavailable, not Estimated:** Antigravity doesn't record its window, and its limits may differ from the model's own. The used value is Local.
+6. **Identity is install-scoped,** one usage account per data folder (IDE and app), under `google:antigravity`. Both currently show the default label "Antigravity (this device)"; M7's rename covers telling them apart.
+7. **Verified on real data** (read-only, before/after snapshot of both data folders and the install folder: no file created, removed or modified):
+   - 21 databases, 760 usage records.
+   - The counts match the research exactly, in about 0.2–0.35 s.
+   - Last-access times changed only on the files read, on the first run.

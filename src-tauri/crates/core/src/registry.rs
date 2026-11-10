@@ -56,7 +56,7 @@ pub const AGENTS: &[AgentSpec] = &[
         display_name: "Antigravity",
         default_scope: "google:antigravity",
         allowed_scopes: &["google:antigravity"],
-        scope_evidence: "unverified: pending M2 (docs/providers/antigravity.md); kept separate from Gemini CLI",
+        scope_evidence: "verified M6: Antigravity plan quotas are documented per model and separately from Gemini CLI; identity is install-scoped, one account per data folder (docs/providers/antigravity.md)",
     },
     AgentSpec {
         agent: AgentId::GeminiCli,

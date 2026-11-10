@@ -72,6 +72,9 @@ pub async fn get_dashboard(state: State<'_, AppState>, utc_offset_minutes: i32) 
     {
         notes.push((AgentId::GeminiCli, crate::dashboard::gemini_telemetry_note(g.telemetry()).to_owned()));
     }
+    if collectors.iter().any(|c| c.agent == AgentId::Antigravity && c.enabled) {
+        notes.push((AgentId::Antigravity, crate::dashboard::ANTIGRAVITY_NOTE.to_owned()));
+    }
     Ok(crate::dashboard::build(now, overview, models, statuses, collectors, &notes))
 }
 
