@@ -156,7 +156,16 @@ All coding agents working on AgentPulse MUST follow these rules whenever they bu
 
 ### 2. Build Artifact Cleanup
 
-**After every task that builds or tests the project, always run both cleanups below.** This is a standing user request (2026-11-07). Do it once the task is finished, not between steps of the same task, and report the project size before and after. In addition:
+**After every task that builds or tests the project, always run both cleanups below.** This is a standing user request (2026-11-07, reinforced 2026-11-11 after it was skipped and the project reached 4.08 GB). Do it once the task is finished, not between steps of the same task, and report the project size before and after.
+
+Cleanup is mandatory and part of finishing the task:
+
+- **Last step, every time.** If a task ran any `cargo` command (`build`, `test`, `clippy`, `tauri dev`/`build`) or `pnpm build`, the cleanup is the last action before the final message.
+- **No exceptions.** This applies when the task ends in a commit, a PR or a milestone stop for approval, and when the build or tests failed.
+- **Report it.** The final message must give the project size before and after. A final message without this report means the task is not finished.
+- **Never deferred.** Don't skip the cleanup because the next task will rebuild anyway.
+
+In addition:
 
 - Remove obsolete Rust build artifacts when they are no longer needed.
 - Remove disposable frontend build outputs and obsolete bundles.
